@@ -1,0 +1,30 @@
+<resources>
+    <string name="app_name">V2reyBND</string>
+    <string name="tab_connection">اتصال</string>
+    <string name="tab_servers">سرورها</string>
+    <string name="tab_store">خرید اشتراک</string>
+    <string name="tab_support">پشتیبانی</string>
+    <string name="tab_settings">تنظیمات</string>
+
+    <string name="status_connected">متصل شد</string>
+    <string name="status_connecting">در حال اتصال…</string>
+    <string name="status_disconnected">قطع اتصال</string>
+    <string name="status_reconnecting">اتصال مجدد…</string>
+
+    <string name="btn_connect">اتصال سریع</string>
+    <string name="btn_disconnect">قطع اتصال</string>
+    <string name="btn_test_all">تست تمام پینگ‌ها</string>
+    <string name="btn_import">افزودن کانفیگ / سابسکریپشن</string>
+
+    <string name="store_title">خرید اشتراک اختصاصی BND</string>
+    <string name="store_subtitle">سرورهای فوق سریع بدون قطعی با آی‌پی ثابت و پینگ مناسب گیمینگ و ترید</string>
+    <string name="store_bot_btn">ورود به ربات تلگرام خرید اشتراک</string>
+    <string name="store_bot_username">@bndteam_bot</string>
+
+    <string name="support_title">پشتیبانی و ارتباط با مدیریت</string>
+    <string name="support_subtitle">پاسخگویی سریع ۲۴ ساعته و رفع مشکلات فنی</string>
+    <string name="support_admin_btn">ارتباط با مدیریت در تلگرام</string>
+    <string name="support_admin_username">@kingV2rey</string>
+    <string name="support_channel_btn">کانال رسمی و وضعیت پینگ سرورها</string>
+    <string name="support_channel_username">@vpn8745</string>
+</resources>

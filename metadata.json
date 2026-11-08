@@ -1,0 +1,8 @@
+{
+  "name": "V2reyBND",
+  "description": "V2reyBND - Advanced Multi-Protocol VPN client with VLESS, VMess, Trojan, Hysteria 2, AmneziaWG, and OpenVPN support, real-time ping diagnostics, Telegram bot store, and VIP support.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
