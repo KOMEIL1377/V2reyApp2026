@@ -311,7 +311,7 @@ private fun NetworkDiagnosticsCard() {
                                 dnsResult = if (dnsOk) "پاسخ معتبر (Cloudflare DoH OK)" else "اختلال DNS اپراتور"
 
                                 delay(350)
-                                udpResult = "پورت‌های UDP و Hysteria 2 و TUIC باز هستند"
+                                udpResult = "پورت‌های UDP، WireGuard و Hysteria 2 باز هستند"
 
                                 delay(300)
                                 iranLanResult = "سامانه تفکیک ترافیک ملی (Bypass Iran) فعال است"
@@ -342,7 +342,7 @@ private fun NetworkDiagnosticsCard() {
                 isOk = dnsResult?.contains("OK") == true
             )
             DiagnosticItem(
-                label = "وضعیت پروتکل‌های UDP (Hysteria 2 / TUIC):",
+                label = "وضعیت پروتکل‌های UDP (WireGuard / Hysteria 2):",
                 value = udpResult ?: "تست نشده",
                 isOk = udpResult != null
             )
@@ -401,12 +401,12 @@ private fun FaqSection() {
 
         FaqAccordionItem(
             question = "کدام پروتکل برای همراه اول و ایرانسل بالاترین سرعت را دارد؟",
-            answer = "پروتکل‌های VLESS Reality و Hysteria 2 و TUIC روی شبکه همراه اول و ایرانسل به دلیل شبیه‌سازی ترافیک عادی وب (TLS/QUIC) بدون افت سرعت و با کمترین پینگ کار می‌کنند."
+            answer = "پروتکل‌های VLESS Reality، XHTTP و Hysteria 2 روی شبکه همراه اول و ایرانسل به دلیل شبیه‌سازی ترافیک عادی وب (TLS/HTTP) بدون افت سرعت و با کمترین پینگ کار می‌کنند."
         )
 
         FaqAccordionItem(
-            question = "در صورت ملی شدن اینترنت چه کار کنم؟",
-            answer = "سرورهای AmneziaWG با پارامترهای تغییر هدر پکت (Jc, Jmin, Jmax) و تونل‌های ضد فیلتر اختصاصی BND حتی در زمان اختلال شدید اینترنت بین‌الملل متصل می‌مانند."
+            question = "در صورت ملی شدن اینترنت یا اختلال شدید چه کار کنم؟",
+            answer = "پروتکل‌های VLESS Reality، XHTTP و Trojan همراه با قابلیت TLS Fragment در بخش تنظیمات هسته Xray (و در صورت نیاز تغییر حالت به Proxy Mode) به عبور از محدودیت‌های شدید اپراتورها کمک می‌کنند."
         )
 
         FaqAccordionItem(

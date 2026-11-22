@@ -1,6 +1,6 @@
 {
   "name": "V2reyBND",
-  "description": "V2reyBND - Advanced Multi-Protocol VPN client with VLESS, VMess, Trojan, Hysteria 2, AmneziaWG, and OpenVPN support, real-time ping diagnostics, Telegram bot store, and VIP support.",
+  "description": "V2reyBND - Xray-core multi-protocol VPN and proxy client supporting VLESS (Reality, TLS, XHTTP, gRPC, WS), VMess, Trojan, Shadowsocks, SOCKS, HTTP, WireGuard, and Hysteria2 with VPN/Proxy modes, custom local ports, Telegram bot store, and VIP support.",
   "requestFramePermissions": [],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"

@@ -2,7 +2,7 @@ package com.example.data
 
 import android.content.Context
 import android.content.SharedPreferences
-import com.example.model.AmneziaParams
+import com.example.model.ConnectionMode
 import com.example.model.ProxyNode
 import com.example.model.ProxyProtocol
 import com.example.model.StorePlan
@@ -25,6 +25,11 @@ object BndTelegramLinks {
 
 class VpnRepository(context: Context) {
 
+    companion object {
+        const val DEFAULT_SOCKS_PORT = 10808
+        const val DEFAULT_HTTP_PORT = 10809
+    }
+
     private val prefs: SharedPreferences =
         context.getSharedPreferences("v2reybnd_prefs", Context.MODE_PRIVATE)
 
@@ -39,6 +44,27 @@ class VpnRepository(context: Context) {
 
     private val _selectedDns = MutableStateFlow(prefs.getString("pref_dns", "1.1.1.1") ?: "1.1.1.1")
     val selectedDns = _selectedDns.asStateFlow()
+
+    private val _connectionMode = MutableStateFlow(
+        ConnectionMode.fromName(prefs.getString("pref_connection_mode", ConnectionMode.VPN.name))
+    )
+    val connectionMode = _connectionMode.asStateFlow()
+
+    private val _socksPort = MutableStateFlow(
+        prefs.getInt("pref_socks_port", DEFAULT_SOCKS_PORT).takeIf { it in 1024..65535 } ?: DEFAULT_SOCKS_PORT
+    )
+    val socksPort = _socksPort.asStateFlow()
+
+    private val _httpPort = MutableStateFlow(
+        prefs.getInt("pref_http_port", DEFAULT_HTTP_PORT).takeIf { it in 1024..65535 } ?: DEFAULT_HTTP_PORT
+    )
+    val httpPort = _httpPort.asStateFlow()
+
+    private val _enableTlsFragment = MutableStateFlow(prefs.getBoolean("pref_tls_fragment", false))
+    val enableTlsFragment = _enableTlsFragment.asStateFlow()
+
+    private val _enableFakeDns = MutableStateFlow(prefs.getBoolean("pref_fake_dns", false))
+    val enableFakeDns = _enableFakeDns.asStateFlow()
 
     private val _subscriptionUrl = MutableStateFlow(prefs.getString("pref_sub_url", "") ?: "")
     val subscriptionUrl = _subscriptionUrl.asStateFlow()
@@ -56,21 +82,8 @@ class VpnRepository(context: Context) {
                 val array = JSONArray(jsonStr)
                 for (i in 0 until array.length()) {
                     val obj = array.getJSONObject(i)
-                    val protocol = ProxyProtocol.valueOf(obj.optString("protocol", "VLESS"))
-                    val amneziaJson = obj.optJSONObject("amnezia")
-                    val amneziaParams = if (amneziaJson != null) {
-                        AmneziaParams(
-                            jc = amneziaJson.optInt("jc", 4),
-                            jmin = amneziaJson.optInt("jmin", 40),
-                            jmax = amneziaJson.optInt("jmax", 70),
-                            s1 = amneziaJson.optInt("s1", 32),
-                            s2 = amneziaJson.optInt("s2", 48),
-                            h1 = amneziaJson.optString("h1", "1"),
-                            h2 = amneziaJson.optString("h2", "2"),
-                            h3 = amneziaJson.optString("h3", "3"),
-                            h4 = amneziaJson.optString("h4", "4")
-                        )
-                    } else null
+                    val protoRaw = obj.optString("protocol", "VLESS")
+                    val protocol = ProxyProtocol.entries.firstOrNull { it.name == protoRaw } ?: continue
 
                     val pingVal = if (obj.has("pingMs") && !obj.isNull("pingMs")) obj.getLong("pingMs") else null
 
@@ -82,19 +95,28 @@ class VpnRepository(context: Context) {
                             server = obj.optString("server", ""),
                             port = obj.optInt("port", 443),
                             uuid = obj.optString("uuid", ""),
+                            username = obj.optString("username", ""),
+                            password = obj.optString("password", ""),
+                            method = obj.optString("method", "chacha20-ietf-poly1305"),
+                            alterId = obj.optInt("alterId", 0),
                             security = obj.optString("security", "tls"),
                             sni = obj.optString("sni", ""),
-                            flow = obj.optString("flow", null),
+                            flow = obj.optString("flow").takeIf { it.isNotBlank() && it != "null" },
                             network = obj.optString("network", "tcp"),
-                            path = obj.optString("path", null),
-                            publicKey = obj.optString("publicKey", null),
-                            shortId = obj.optString("shortId", null),
-                            fingerprint = obj.optString("fingerprint", "chrome"),
-                            amneziaParams = amneziaParams,
-                            openVpnConfig = obj.optString("openVpnConfig", null),
-                            openVpnUsername = obj.optString("openVpnUsername", null),
-                            openVpnPassword = obj.optString("openVpnPassword", null),
-                            openVpnRequiresAuth = obj.optBoolean("openVpnRequiresAuth", false),
+                            host = obj.optString("host").takeIf { it.isNotBlank() && it != "null" },
+                            path = obj.optString("path").takeIf { it.isNotBlank() && it != "null" },
+                            xhttpMode = obj.optString("xhttpMode").takeIf { it.isNotBlank() && it != "null" },
+                            xhttpExtra = obj.optString("xhttpExtra").takeIf { it.isNotBlank() && it != "null" },
+                            publicKey = obj.optString("publicKey").takeIf { it.isNotBlank() && it != "null" },
+                            shortId = obj.optString("shortId").takeIf { it.isNotBlank() && it != "null" },
+                            fingerprint = obj.optString("fingerprint", "chrome").takeIf { it.isNotBlank() && it != "null" },
+                            alpn = obj.optString("alpn").takeIf { it.isNotBlank() && it != "null" },
+                            allowInsecure = obj.optBoolean("allowInsecure", false),
+                            obfsType = obj.optString("obfsType").takeIf { it.isNotBlank() && it != "null" },
+                            obfsPassword = obj.optString("obfsPassword").takeIf { it.isNotBlank() && it != "null" },
+                            wgAddress = obj.optString("wgAddress").takeIf { it.isNotBlank() && it != "null" },
+                            wgReserved = obj.optString("wgReserved").takeIf { it.isNotBlank() && it != "null" },
+                            wgMtu = obj.optInt("wgMtu", 1420),
                             rawUri = obj.optString("rawUri", ""),
                             flag = obj.optString("flag", "⚡"),
                             pingMs = pingVal
@@ -123,34 +145,31 @@ class VpnRepository(context: Context) {
                     put("server", node.server)
                     put("port", node.port)
                     put("uuid", node.uuid)
+                    put("username", node.username)
+                    put("password", node.password)
+                    put("method", node.method)
+                    put("alterId", node.alterId)
                     put("security", node.security)
                     put("sni", node.sni)
                     put("flow", node.flow)
                     put("network", node.network)
+                    put("host", node.host)
                     put("path", node.path)
+                    put("xhttpMode", node.xhttpMode)
+                    put("xhttpExtra", node.xhttpExtra)
                     put("publicKey", node.publicKey)
                     put("shortId", node.shortId)
                     put("fingerprint", node.fingerprint)
+                    put("alpn", node.alpn)
+                    put("allowInsecure", node.allowInsecure)
+                    put("obfsType", node.obfsType)
+                    put("obfsPassword", node.obfsPassword)
+                    put("wgAddress", node.wgAddress)
+                    put("wgReserved", node.wgReserved)
+                    put("wgMtu", node.wgMtu)
                     put("rawUri", node.rawUri)
                     put("flag", node.flag)
                     node.pingMs?.let { put("pingMs", it) }
-                    node.amneziaParams?.let { ap ->
-                        put("amnezia", JSONObject().apply {
-                            put("jc", ap.jc)
-                            put("jmin", ap.jmin)
-                            put("jmax", ap.jmax)
-                            put("s1", ap.s1)
-                            put("s2", ap.s2)
-                            put("h1", ap.h1)
-                            put("h2", ap.h2)
-                            put("h3", ap.h3)
-                            put("h4", ap.h4)
-                        })
-                    }
-                    node.openVpnConfig?.let { put("openVpnConfig", it) }
-                    node.openVpnUsername?.let { put("openVpnUsername", it) }
-                    node.openVpnPassword?.let { put("openVpnPassword", it) }
-                    put("openVpnRequiresAuth", node.openVpnRequiresAuth)
                 }
                 array.put(obj)
             }
@@ -245,6 +264,43 @@ class VpnRepository(context: Context) {
         prefs.edit().putString("pref_dns", dns).apply()
     }
 
+    fun setConnectionMode(mode: ConnectionMode) {
+        _connectionMode.value = mode
+        prefs.edit().putString("pref_connection_mode", mode.name).apply()
+    }
+
+    fun setPorts(socksPort: Int, httpPort: Int): Boolean {
+        if (socksPort !in 1024..65535 || httpPort !in 1024..65535 || socksPort == httpPort) {
+            return false
+        }
+        _socksPort.value = socksPort
+        _httpPort.value = httpPort
+        prefs.edit()
+            .putInt("pref_socks_port", socksPort)
+            .putInt("pref_http_port", httpPort)
+            .apply()
+        return true
+    }
+
+    fun resetPortsToDefault() {
+        _socksPort.value = DEFAULT_SOCKS_PORT
+        _httpPort.value = DEFAULT_HTTP_PORT
+        prefs.edit()
+            .putInt("pref_socks_port", DEFAULT_SOCKS_PORT)
+            .putInt("pref_http_port", DEFAULT_HTTP_PORT)
+            .apply()
+    }
+
+    fun setEnableTlsFragment(enabled: Boolean) {
+        _enableTlsFragment.value = enabled
+        prefs.edit().putBoolean("pref_tls_fragment", enabled).apply()
+    }
+
+    fun setEnableFakeDns(enabled: Boolean) {
+        _enableFakeDns.value = enabled
+        prefs.edit().putBoolean("pref_fake_dns", enabled).apply()
+    }
+
     fun setSubscriptionUrl(url: String) {
         _subscriptionUrl.value = url
         prefs.edit().putString("pref_sub_url", url).apply()
@@ -261,7 +317,7 @@ class VpnRepository(context: Context) {
                 priceUsd = "$2.5",
                 features = listOf(
                     "۱ کاربر همزمان بدون افت سرعت",
-                    "پشتیبانی از پروتکل‌های VLESS Reality و Hysteria 2 و TUIC",
+                    "پشتیبانی از پروتکل‌های VLESS Reality، XHTTP و Hysteria 2",
                     "سرورهای اختصاصی آلمان و هلند",
                     "آی‌پی ثابت مخصوص یوتیوب، اینستاگرام و وب‌گردی",
                     "ضمانت بازگشت وجه کامل در صورت قطعی"
@@ -280,7 +336,7 @@ class VpnRepository(context: Context) {
                     "۲ کاربر همزمان مجزا",
                     "پینگ پایین زیر ۸۰ میلی‌ثانیه مخصوص گیمینگ و ترید",
                     "دسترسی به تمامی لوکیشن‌های پرسرعت اروپا و آسیا",
-                    "تونل اختصاصی AmneziaWG ضد فیلترینگ شدید",
+                    "پشتیبانی از تانل VLESS Reality و XHTTP ضد فیلترینگ",
                     "پشتیبانی اختصاصی ۲۴ ساعته در تلگرام"
                 )
             ),

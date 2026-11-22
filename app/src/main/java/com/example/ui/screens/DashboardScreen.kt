@@ -1,6 +1,5 @@
 package com.example.ui.screens
 
-import android.content.Context
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -27,12 +26,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.KeyboardArrowLeft
-import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Speed
@@ -62,6 +62,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.BndTelegramLinks
+import com.example.model.ConnectionMode
 import com.example.model.NetworkTrafficStats
 import com.example.model.ProxyNode
 import com.example.model.VpnState
@@ -100,6 +101,13 @@ fun DashboardScreen(
     val trafficStats by viewModel.trafficStats.collectAsState()
     val isTestingAll by viewModel.isTestingAllPings.collectAsState()
     val nodes by viewModel.nodes.collectAsState()
+    val connectionMode by viewModel.connectionMode.collectAsState()
+    val socksPort by viewModel.socksPort.collectAsState()
+    val httpPort by viewModel.httpPort.collectAsState()
+    val activeMode by viewModel.activeConnectionMode.collectAsState()
+    val activeSocksPort by viewModel.activeSocksPort.collectAsState()
+    val activeHttpPort by viewModel.activeHttpPort.collectAsState()
+    val lastError by viewModel.lastError.collectAsState()
 
     val scrollState = rememberScrollState()
 
@@ -110,7 +118,7 @@ fun DashboardScreen(
     ) {
         // Prominent Header with BND Logo
         BndTopHeaderBar(
-            subtitle = "Multi-Protocol • The Fastest VPN",
+            subtitle = "Xray-core Engine • The Fastest VPN",
             actions = {
                 if (nodes.isNotEmpty()) {
                     IconButton(
@@ -169,7 +177,16 @@ fun DashboardScreen(
                 onTestPing = { selectedNode?.let { viewModel.testSinglePing(it) } }
             )
 
-            Spacer(modifier = Modifier.height(24.dp))
+            // Core Error Diagnostic Banner
+            if (!lastError.isNullOrBlank()) {
+                Spacer(modifier = Modifier.height(10.dp))
+                CoreErrorDiagnosticBanner(
+                    errorMessage = lastError.orEmpty(),
+                    onDismiss = { viewModel.clearError() }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
 
             // Central Glowing Big Power Button
             GlowingPowerButton(
@@ -180,17 +197,34 @@ fun DashboardScreen(
                 }
             )
 
-            Spacer(modifier = Modifier.height(22.dp))
+            Spacer(modifier = Modifier.height(18.dp))
 
-            // Connection Status Banner
-            ConnectionStatusPill(vpnState = vpnState, hasNodes = nodes.isNotEmpty())
+            // Connection Status & Active Mode/Ports Banner
+            val displayMode = if (vpnState == VpnState.CONNECTED || vpnState == VpnState.CONNECTING) activeMode else connectionMode
+            val displaySocks = if (vpnState == VpnState.CONNECTED || vpnState == VpnState.CONNECTING) activeSocksPort else socksPort
+            val displayHttp = if (vpnState == VpnState.CONNECTED || vpnState == VpnState.CONNECTING) activeHttpPort else httpPort
 
-            Spacer(modifier = Modifier.height(22.dp))
+            ConnectionStatusPill(
+                vpnState = vpnState,
+                hasNodes = nodes.isNotEmpty(),
+                connectionMode = displayMode
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = "حالت: ${displayMode.shortLabel} • SOCKS 127.0.0.1:$displaySocks • HTTP :$displayHttp",
+                color = BndTextMuted,
+                fontSize = 11.sp
+            )
+
+            Spacer(modifier = Modifier.height(18.dp))
 
             // Real-Time Live Traffic & Speed Cards
             TrafficDashboardSection(
                 vpnState = vpnState,
-                stats = trafficStats
+                stats = trafficStats,
+                connectionMode = displayMode
             )
 
             Spacer(modifier = Modifier.height(20.dp))
@@ -202,6 +236,49 @@ fun DashboardScreen(
             )
 
             Spacer(modifier = Modifier.height(28.dp))
+        }
+    }
+}
+
+@Composable
+private fun CoreErrorDiagnosticBanner(
+    errorMessage: String,
+    onDismiss: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("core_error_banner")
+            .clip(RoundedCornerShape(14.dp))
+            .background(BndErrorRed.copy(alpha = 0.14f))
+            .border(1.dp, BndErrorRed.copy(alpha = 0.55f), RoundedCornerShape(14.dp))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = Icons.Default.ErrorOutline,
+            contentDescription = "Core error",
+            tint = BndErrorRed,
+            modifier = Modifier.size(20.dp)
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(
+            text = errorMessage,
+            color = Color.White,
+            fontSize = 11.sp,
+            lineHeight = 16.sp,
+            modifier = Modifier.weight(1f)
+        )
+        IconButton(
+            onClick = onDismiss,
+            modifier = Modifier.size(28.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.Close,
+                contentDescription = "Dismiss error",
+                tint = BndErrorRed,
+                modifier = Modifier.size(16.dp)
+            )
         }
     }
 }
@@ -233,7 +310,6 @@ private fun SelectedServerCard(
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             if (node == null) {
-                // Empty state on Dashboard
                 Row(
                     modifier = Modifier.weight(1f),
                     verticalAlignment = Alignment.CenterVertically
@@ -264,7 +340,7 @@ private fun SelectedServerCard(
                         )
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
-                            text = "برای افزودن کانفیگ یا سابسکریپشن لمس کنید",
+                            text = "برای افزودن کانفیگ Xray یا سابسکریپشن لمس کنید",
                             color = BndNeonPurple,
                             fontSize = 11.sp
                         )
@@ -282,7 +358,7 @@ private fun SelectedServerCard(
                         fontWeight = FontWeight.Bold
                     )
                     Icon(
-                        imageVector = Icons.Default.KeyboardArrowLeft,
+                        imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
                         contentDescription = "Add server",
                         tint = BndOrchidTertiary,
                         modifier = Modifier.size(20.dp)
@@ -349,7 +425,7 @@ private fun SelectedServerCard(
                         fontWeight = FontWeight.Medium
                     )
                     Icon(
-                        imageVector = Icons.Default.KeyboardArrowLeft,
+                        imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
                         contentDescription = "Change server",
                         tint = BndOrchidTertiary,
                         modifier = Modifier.size(20.dp)
@@ -434,14 +510,14 @@ private fun GlowingPowerButton(
 
     Box(
         modifier = Modifier
-            .size(230.dp)
+            .size(220.dp)
             .testTag("vpn_power_button_container"),
         contentAlignment = Alignment.Center
     ) {
         if (isConnected || isConnecting) {
             Box(
                 modifier = Modifier
-                    .size(230.dp)
+                    .size(220.dp)
                     .scale(pulseScale)
                     .clip(CircleShape)
                     .background(
@@ -457,7 +533,7 @@ private fun GlowingPowerButton(
 
         Box(
             modifier = Modifier
-                .size(190.dp)
+                .size(182.dp)
                 .clip(CircleShape)
                 .background(
                     if (isConnected) {
@@ -509,7 +585,7 @@ private fun GlowingPowerButton(
                 ) {
                     if (isConnecting) {
                         CircularProgressIndicator(
-                            modifier = Modifier.size(54.dp),
+                            modifier = Modifier.size(52.dp),
                             color = Color.White,
                             strokeWidth = 3.dp
                         )
@@ -518,7 +594,7 @@ private fun GlowingPowerButton(
                             imageVector = Icons.Default.PowerSettingsNew,
                             contentDescription = "VPN Power",
                             tint = if (isConnected) Color.White else BndTextSecondary,
-                            modifier = Modifier.size(58.dp)
+                            modifier = Modifier.size(56.dp)
                         )
                     }
 
@@ -543,13 +619,20 @@ private fun GlowingPowerButton(
 }
 
 @Composable
-private fun ConnectionStatusPill(vpnState: VpnState, hasNodes: Boolean) {
+private fun ConnectionStatusPill(
+    vpnState: VpnState,
+    hasNodes: Boolean,
+    connectionMode: ConnectionMode
+) {
     val (pillColor, text) = when {
-        vpnState == VpnState.CONNECTED -> Pair(BndSuccessGreen, "متصل شد • تونل امن و ضد فیلتر فعال است")
-        vpnState == VpnState.CONNECTING -> Pair(BndWarningYellow, "در حال اتصال و برقراری ارتباط ایمن…")
+        vpnState == VpnState.CONNECTED && connectionMode == ConnectionMode.VPN ->
+            Pair(BndSuccessGreen, "متصل شد • هسته Xray و تونل VPN فعال است")
+        vpnState == VpnState.CONNECTED && connectionMode == ConnectionMode.PROXY ->
+            Pair(BndSuccessGreen, "متصل شد • هسته پراکسی Xray فعال است")
+        vpnState == VpnState.CONNECTING -> Pair(BndWarningYellow, "در حال راه‌اندازی Xray-core…")
         vpnState == VpnState.RECONNECTING -> Pair(BndWarningYellow, "در حال اتصال مجدد به سرور…")
-        vpnState == VpnState.FAILED -> Pair(BndErrorRed, "اتصال ناموفق • لطفاً سرور را بررسی کنید")
-        !hasNodes -> Pair(BndVioletPrimary, "حالت کلاینت خام • لطفاً کانفیگ اضافه کنید")
+        vpnState == VpnState.FAILED -> Pair(BndErrorRed, "خطای اتصال هسته • گزارش خطا را بررسی کنید")
+        !hasNodes -> Pair(BndVioletPrimary, "حالت کلاینت خام • لطفاً کانفیگ Xray اضافه کنید")
         else -> Pair(BndSurfaceVariantDark, "قطع اتصال • برای فعال‌سازی لمس کنید")
     }
 
@@ -585,7 +668,8 @@ private fun ConnectionStatusPill(vpnState: VpnState, hasNodes: Boolean) {
 @Composable
 private fun TrafficDashboardSection(
     vpnState: VpnState,
-    stats: NetworkTrafficStats
+    stats: NetworkTrafficStats,
+    connectionMode: ConnectionMode
 ) {
     val isConnected = vpnState == VpnState.CONNECTED
 
@@ -645,14 +729,14 @@ private fun TrafficDashboardSection(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
                         imageVector = Icons.Default.CheckCircle,
-                        contentDescription = "Protocol",
-                        tint = BndSuccessGreen,
+                        contentDescription = "Core",
+                        tint = if (isConnected) BndSuccessGreen else BndTextMuted,
                         modifier = Modifier.size(14.dp)
                     )
                     Spacer(modifier = Modifier.width(4.dp))
                     Text(
-                        text = "BND Anti-DPI Active",
-                        color = BndSuccessGreen,
+                        text = "Xray ${connectionMode.shortLabel}",
+                        color = if (isConnected) BndSuccessGreen else BndTextMuted,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Medium
                     )
@@ -736,7 +820,6 @@ private fun QuickStoreAndSupportBanners(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        // Store Bot Promo Card -> https://t.me/bndteam_bot
         Card(
             modifier = Modifier
                 .weight(1f)
@@ -776,7 +859,6 @@ private fun QuickStoreAndSupportBanners(
             }
         }
 
-        // Support Admin Card -> https://t.me/kingV2rey
         Card(
             modifier = Modifier
                 .weight(1f)

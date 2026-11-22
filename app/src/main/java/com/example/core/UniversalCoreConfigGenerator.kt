@@ -1,5 +1,7 @@
 package com.example.core
 
+import com.example.data.VpnRepository
+import com.example.model.ConnectionMode
 import com.example.model.ProxyNode
 import com.example.model.ProxyProtocol
 import org.json.JSONArray
@@ -7,282 +9,585 @@ import org.json.JSONObject
 
 object UniversalCoreConfigGenerator {
 
+    private val IRAN_DOMAINS = listOf(
+        "domain:ir",
+        "domain:shaparak.ir",
+        "domain:digikala.com",
+        "domain:snapp.ir",
+        "domain:divar.ir",
+        "domain:aparat.com",
+        "domain:torob.com",
+        "domain:filimo.com",
+        "domain:telewebion.com",
+        "domain:bale.ai",
+        "domain:eitaa.com",
+        "domain:rubika.ir"
+    )
+
+    private val PRIVATE_CIDRS = listOf(
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "127.0.0.0/8",
+        "100.64.0.0/10",
+        "169.254.0.0/16",
+        "224.0.0.0/4",
+        "255.255.255.255/32",
+        "::1/128",
+        "fc00::/7",
+        "fe80::/10"
+    )
+
     /**
-     * Generates a fully compliant Sing-box core configuration JSON
+     * Generates a complete Xray-core configuration JSON respecting:
+     * - Connection Mode (VPN TUN + local SOCKS/HTTP vs Proxy-only local SOCKS/HTTP)
+     * - Custom SOCKS5 & HTTP inbound ports
+     * - Selected DNS server + FakeDNS / Sniffing
+     * - Bypass Iran LAN & domestic domains (self-contained rules with zero external .dat files required)
+     * - TLS Fragment outbound chaining (`dialerProxy = "fragment"`)
+     * - Full Xray protocols: VLESS (Reality/TLS/gRPC/WS/XHTTP/XTLS), VMess, Trojan, Shadowsocks,
+     *   SOCKS, HTTP, WireGuard, Hysteria2
      */
-    fun generateSingBoxConfig(node: ProxyNode, bypassIran: Boolean = true, dnsServer: String = "1.1.1.1"): String {
+    fun generateXrayConfig(
+        node: ProxyNode,
+        connectionMode: ConnectionMode = ConnectionMode.VPN,
+        socksPort: Int = VpnRepository.DEFAULT_SOCKS_PORT,
+        httpPort: Int = VpnRepository.DEFAULT_HTTP_PORT,
+        bypassIran: Boolean = true,
+        dnsServer: String = "1.1.1.1",
+        enableTlsFragment: Boolean = false,
+        enableFakeDns: Boolean = false
+    ): String {
         val root = JSONObject()
 
-        // Log config
-        val log = JSONObject().apply {
-            put("disabled", false)
-            put("level", "info")
-            put("timestamp", true)
-        }
-        root.put("log", log)
+        root.put("log", JSONObject().apply {
+            put("loglevel", "warning")
+        })
 
-        // DNS config
-        val dns = JSONObject().apply {
-            val servers = JSONArray().apply {
+        // FakeDNS IP pool when enabled
+        if (enableFakeDns) {
+            root.put("fakedns", JSONArray().apply {
                 put(JSONObject().apply {
-                    put("tag", "remote-dns")
-                    put("address", "tcp://$dnsServer")
-                    put("detour", "proxy")
+                    put("ipPool", "198.18.0.0/15")
                 })
+            })
+        }
+
+        // DNS configuration:
+        // - Resolve the proxy server's own hostname via localhost so there is never a DNS loop!
+        // - Optionally resolve Iranian domains via localhost when bypassIran is active.
+        // - Route all other queries through the remote encrypted/public DNS via the proxy outbound.
+        root.put("dns", buildDnsConfig(node, dnsServer, bypassIran, enableFakeDns))
+
+        // Inbounds
+        val sniffingDestOverride = JSONArray().apply {
+            put("http")
+            put("tls")
+            put("quic")
+            if (enableFakeDns) put("fakedns")
+        }
+        val sniffingConfig = JSONObject().apply {
+            put("enabled", enableFakeDns || connectionMode == ConnectionMode.VPN)
+            put("destOverride", sniffingDestOverride)
+            put("routeOnly", false)
+        }
+
+        val inbounds = JSONArray().apply {
+            if (connectionMode == ConnectionMode.VPN) {
                 put(JSONObject().apply {
-                    put("tag", "local-dns")
-                    put("address", "https://1.1.1.1/dns-query")
-                    put("detour", "direct")
+                    put("tag", "tun-in")
+                    put("protocol", "tun")
+                    put("settings", JSONObject().apply {
+                        put("name", "tun0")
+                        put("mtu", 1500)
+                        put("gateway", JSONArray().put("172.19.0.1/30"))
+                        put("userLevel", 0)
+                    })
+                    put("sniffing", sniffingConfig)
                 })
             }
-            put("servers", servers)
-            put("final", "remote-dns")
-        }
-        root.put("dns", dns)
 
-        // Inbound (TUN interface)
-        val inbounds = JSONArray().apply {
             put(JSONObject().apply {
-                put("type", "tun")
-                put("tag", "tun-in")
-                put("interface_name", "tun0")
-                put("inet4_address", "172.19.0.1/30")
-                put("mtu", 9000)
-                put("auto_route", true)
-                put("strict_route", true)
-                put("stack", "system")
-                put("sniff", true)
+                put("tag", "socks-in")
+                put("listen", "127.0.0.1")
+                put("port", socksPort)
+                put("protocol", "socks")
+                put("settings", JSONObject().apply {
+                    put("auth", "noauth")
+                    put("udp", true)
+                })
+                put("sniffing", sniffingConfig)
+            })
+
+            put(JSONObject().apply {
+                put("tag", "http-in")
+                put("listen", "127.0.0.1")
+                put("port", httpPort)
+                put("protocol", "http")
+                put("sniffing", sniffingConfig)
             })
         }
         root.put("inbounds", inbounds)
 
-        // Outbound for current node
-        val nodeOutbound = createSingBoxOutbound(node)
-
+        // Outbounds
+        val useFragment = enableTlsFragment && supportsTlsFragment(node)
         val outbounds = JSONArray().apply {
-            put(nodeOutbound)
+            put(createProxyOutbound(node, useFragment))
             put(JSONObject().apply {
-                put("type", "direct")
                 put("tag", "direct")
+                put("protocol", "freedom")
+                put("settings", JSONObject().apply {
+                    put("domainStrategy", "UseIPv4")
+                })
             })
             put(JSONObject().apply {
-                put("type", "block")
                 put("tag", "block")
+                put("protocol", "blackhole")
+                put("settings", JSONObject().apply {
+                    put("response", JSONObject().apply {
+                        put("type", "http")
+                    })
+                })
             })
             put(JSONObject().apply {
-                put("type", "dns")
                 put("tag", "dns-out")
+                put("protocol", "dns")
             })
+            if (useFragment) {
+                put(JSONObject().apply {
+                    put("tag", "fragment")
+                    put("protocol", "freedom")
+                    put("settings", JSONObject().apply {
+                        put("domainStrategy", "UseIPv4")
+                        put("fragment", JSONObject().apply {
+                            put("packets", "tlshello")
+                            put("length", "10-20")
+                            put("interval", "10-20")
+                        })
+                    })
+                })
+            }
         }
         root.put("outbounds", outbounds)
 
-        // Routing Rules
-        val route = JSONObject().apply {
-            val rules = JSONArray().apply {
-                put(JSONObject().apply {
-                    put("protocol", "dns")
-                    put("outbound", "dns-out")
-                })
-                if (bypassIran) {
-                    put(JSONObject().apply {
-                        val geoip = JSONArray().apply { put("ir") }
-                        val geosite = JSONArray().apply { put("ir") }
-                        put("geoip", geoip)
-                        put("geosite", geosite)
-                        put("outbound", "direct")
-                    })
-                }
-            }
-            put("rules", rules)
-            put("auto_detect_interface", true)
-            put("final", "proxy")
-        }
-        root.put("route", route)
+        // Routing rules
+        root.put("routing", buildRoutingConfig(node, connectionMode, bypassIran))
 
         return root.toString(2)
     }
 
-    private fun createSingBoxOutbound(node: ProxyNode): JSONObject {
+    private fun buildDnsConfig(
+        node: ProxyNode,
+        dnsServer: String,
+        bypassIran: Boolean,
+        enableFakeDns: Boolean
+    ): JSONObject {
+        val cleanDns = dnsServer.ifBlank { "1.1.1.1" }
+        val servers = JSONArray()
+
+        if (enableFakeDns) {
+            servers.put("fakedns")
+        }
+
+        // Primary remote DNS (routed through proxy outbound)
+        servers.put(cleanDns)
+
+        // Localhost DNS for proxy server hostname resolution & optional Iran domains
+        val localDomains = mutableListOf<String>()
+        if (node.server.isNotBlank() && !isIpAddress(node.server)) {
+            localDomains.add("full:${node.server}")
+        }
+        if (bypassIran) {
+            localDomains.addAll(IRAN_DOMAINS)
+        }
+        if (localDomains.isNotEmpty()) {
+            servers.put(JSONObject().apply {
+                put("address", "localhost")
+                put("domains", JSONArray(localDomains))
+                put("skipFallback", true)
+            })
+        } else {
+            servers.put("localhost")
+        }
+
+        return JSONObject().apply {
+            put("servers", servers)
+            put("queryStrategy", "UseIPv4")
+            put("disableFallbackIfMatch", true)
+        }
+    }
+
+    private fun buildRoutingConfig(
+        node: ProxyNode,
+        connectionMode: ConnectionMode,
+        bypassIran: Boolean
+    ): JSONObject {
+        val rules = JSONArray()
+
+        // 1. Intercept DNS traffic arriving on TUN inbound -> Xray DNS handler
+        if (connectionMode == ConnectionMode.VPN) {
+            rules.put(JSONObject().apply {
+                put("type", "field")
+                put("inboundTag", JSONArray().put("tun-in"))
+                put("port", "53")
+                put("outboundTag", "dns-out")
+            })
+        }
+
+        // 2. Keep Private/LAN CIDRs direct
+        rules.put(JSONObject().apply {
+            put("type", "field")
+            put("ip", JSONArray(PRIVATE_CIDRS))
+            put("outboundTag", "direct")
+        })
+
+        // 3. Ensure proxy server's own domain/IP always bypasses routing loops if resolved externally
+        if (node.server.isNotBlank() && !isIpAddress(node.server)) {
+            // Note: Xray's own outbound dials bypass routing rules automatically,
+            // while UDP/TCP NTP/connectivity probes remain safely routed.
+        }
+
+        // 4. Bypass Iranian domestic sites when enabled
+        if (bypassIran) {
+            rules.put(JSONObject().apply {
+                put("type", "field")
+                put("domain", JSONArray(IRAN_DOMAINS))
+                put("outboundTag", "direct")
+            })
+        }
+
+        // 5. Default catch-all: route all TCP & UDP traffic through the selected Xray proxy outbound
+        rules.put(JSONObject().apply {
+            put("type", "field")
+            put("network", "tcp,udp")
+            put("outboundTag", "proxy")
+        })
+
+        return JSONObject().apply {
+            put("domainStrategy", "IPIfNonMatch")
+            put("rules", rules)
+        }
+    }
+
+    private fun supportsTlsFragment(node: ProxyNode): Boolean {
+        if (node.protocol == ProxyProtocol.WIREGUARD ||
+            node.protocol == ProxyProtocol.HYSTERIA2 ||
+            node.protocol == ProxyProtocol.SHADOWSOCKS ||
+            node.protocol == ProxyProtocol.SOCKS
+        ) {
+            return false
+        }
+        val net = node.network.lowercase()
+        return node.security != "none" && (net == "tcp" || net == "raw" || net == "ws" || net == "httpupgrade" || net == "xhttp" || net == "splithttp")
+    }
+
+    private fun createProxyOutbound(node: ProxyNode, useFragment: Boolean): JSONObject {
         val out = JSONObject()
         out.put("tag", "proxy")
 
         when (node.protocol) {
             ProxyProtocol.VLESS -> {
-                out.put("type", "vless")
-                out.put("server", node.server)
-                out.put("server_port", node.port)
-                out.put("uuid", node.uuid)
-                node.flow?.let { out.put("flow", it) }
-
-                val tls = JSONObject().apply {
-                    put("enabled", true)
-                    put("server_name", node.sni.ifEmpty { node.server })
-                    put("insecure", false)
-                    if (node.security == "reality") {
-                        val reality = JSONObject().apply {
-                            put("enabled", true)
-                            put("public_key", node.publicKey.orEmpty())
-                            put("short_id", node.shortId.orEmpty())
-                        }
-                        put("reality", reality)
-                    }
-                    val utls = JSONObject().apply {
-                        put("enabled", true)
-                        put("fingerprint", node.fingerprint ?: "chrome")
-                    }
-                    put("utls", utls)
-                }
-                out.put("tls", tls)
-
-                if (node.network == "grpc") {
-                    out.put("transport", JSONObject().apply {
-                        put("type", "grpc")
-                        put("service_name", node.path.orEmpty())
+                out.put("protocol", "vless")
+                out.put("settings", JSONObject().apply {
+                    put("vnext", JSONArray().apply {
+                        put(JSONObject().apply {
+                            put("address", node.server)
+                            put("port", node.port)
+                            put("users", JSONArray().apply {
+                                put(JSONObject().apply {
+                                    put("id", node.uuid)
+                                    put("encryption", "none")
+                                    node.flow?.takeIf { it.isNotBlank() }?.let { put("flow", it) }
+                                })
+                            })
+                        })
                     })
-                } else if (node.network == "ws") {
-                    out.put("transport", JSONObject().apply {
-                        put("type", "ws")
-                        put("path", node.path ?: "/")
-                    })
-                }
-            }
-
-            ProxyProtocol.HYSTERIA2 -> {
-                out.put("type", "hysteria2")
-                out.put("server", node.server)
-                out.put("server_port", node.port)
-                out.put("password", node.uuid)
-                val tls = JSONObject().apply {
-                    put("enabled", true)
-                    put("server_name", node.sni.ifEmpty { node.server })
-                    put("insecure", node.security == "insecure")
-                }
-                out.put("tls", tls)
-            }
-
-            ProxyProtocol.TUIC -> {
-                out.put("type", "tuic")
-                out.put("server", node.server)
-                out.put("server_port", node.port)
-                out.put("uuid", node.uuid)
-                out.put("congestion_controller", "bbr")
-                val tls = JSONObject().apply {
-                    put("enabled", true)
-                    put("server_name", node.sni.ifEmpty { node.server })
-                    val alpn = JSONArray().apply { put("h3") }
-                    put("alpn", alpn)
-                }
-                out.put("tls", tls)
-            }
-
-            ProxyProtocol.AMNEZIA_WG -> {
-                out.put("type", "wireguard")
-                out.put("server", node.server)
-                out.put("server_port", node.port)
-                node.amneziaParams?.let { ap ->
-                    // AmneziaWG obfuscation extensions
-                    val awg = JSONObject().apply {
-                        put("jc", ap.jc)
-                        put("jmin", ap.jmin)
-                        put("jmax", ap.jmax)
-                        put("s1", ap.s1)
-                        put("s2", ap.s2)
-                        put("h1", ap.h1)
-                        put("h2", ap.h2)
-                        put("h3", ap.h3)
-                        put("h4", ap.h4)
-                    }
-                    out.put("amnezia_wg", awg)
-                }
-            }
-
-            ProxyProtocol.TROJAN -> {
-                out.put("type", "trojan")
-                out.put("server", node.server)
-                out.put("server_port", node.port)
-                out.put("password", node.uuid)
-                val tls = JSONObject().apply {
-                    put("enabled", true)
-                    put("server_name", node.sni.ifEmpty { node.server })
-                }
-                out.put("tls", tls)
+                })
+                out.put("streamSettings", buildStreamSettings(node, useFragment))
             }
 
             ProxyProtocol.VMESS -> {
-                out.put("type", "vmess")
-                out.put("server", node.server)
-                out.put("server_port", node.port)
-                out.put("uuid", node.uuid)
-                out.put("security", "auto")
+                out.put("protocol", "vmess")
+                out.put("settings", JSONObject().apply {
+                    put("vnext", JSONArray().apply {
+                        put(JSONObject().apply {
+                            put("address", node.server)
+                            put("port", node.port)
+                            put("users", JSONArray().apply {
+                                put(JSONObject().apply {
+                                    put("id", node.uuid)
+                                    put("alterId", node.alterId.coerceAtLeast(0))
+                                    put("security", node.method.ifBlank { "auto" })
+                                })
+                            })
+                        })
+                    })
+                })
+                out.put("streamSettings", buildStreamSettings(node, useFragment))
+            }
+
+            ProxyProtocol.TROJAN -> {
+                out.put("protocol", "trojan")
+                out.put("settings", JSONObject().apply {
+                    put("servers", JSONArray().apply {
+                        put(JSONObject().apply {
+                            put("address", node.server)
+                            put("port", node.port)
+                            put("password", node.password.ifEmpty { node.uuid })
+                        })
+                    })
+                })
+                out.put("streamSettings", buildStreamSettings(node, useFragment))
             }
 
             ProxyProtocol.SHADOWSOCKS -> {
-                out.put("type", "shadowsocks")
-                out.put("server", node.server)
-                out.put("server_port", node.port)
-                out.put("method", "chacha20-ietf-poly1305")
-                out.put("password", node.uuid)
+                out.put("protocol", "shadowsocks")
+                out.put("settings", JSONObject().apply {
+                    put("servers", JSONArray().apply {
+                        put(JSONObject().apply {
+                            put("address", node.server)
+                            put("port", node.port)
+                            put("method", node.method.ifBlank { "chacha20-ietf-poly1305" })
+                            put("password", node.password.ifEmpty { node.uuid })
+                        })
+                    })
+                })
+                out.put("streamSettings", JSONObject().apply {
+                    put("network", "tcp")
+                })
             }
 
-            ProxyProtocol.OPENVPN -> {
-                out.put("type", "openvpn")
-                out.put("server", node.server)
-                out.put("server_port", node.port)
+            ProxyProtocol.SOCKS -> {
+                out.put("protocol", "socks")
+                out.put("settings", JSONObject().apply {
+                    put("servers", JSONArray().apply {
+                        put(JSONObject().apply {
+                            put("address", node.server)
+                            put("port", node.port)
+                            if (node.username.isNotBlank() || node.password.isNotBlank()) {
+                                put("users", JSONArray().apply {
+                                    put(JSONObject().apply {
+                                        put("user", node.username)
+                                        put("pass", node.password)
+                                    })
+                                })
+                            }
+                        })
+                    })
+                })
+            }
+
+            ProxyProtocol.HTTP -> {
+                out.put("protocol", "http")
+                out.put("settings", JSONObject().apply {
+                    put("servers", JSONArray().apply {
+                        put(JSONObject().apply {
+                            put("address", node.server)
+                            put("port", node.port)
+                            if (node.username.isNotBlank() || node.password.isNotBlank()) {
+                                put("users", JSONArray().apply {
+                                    put(JSONObject().apply {
+                                        put("user", node.username)
+                                        put("pass", node.password)
+                                    })
+                                })
+                            }
+                        })
+                    })
+                })
+                if (node.security == "tls") {
+                    out.put("streamSettings", buildStreamSettings(node, useFragment))
+                }
+            }
+
+            ProxyProtocol.WIREGUARD -> {
+                out.put("protocol", "wireguard")
+                val addresses = (node.wgAddress ?: "10.0.0.2/32")
+                    .split(",")
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
+                val reservedBytes = (node.wgReserved ?: "")
+                    .split(",")
+                    .mapNotNull { it.trim().toIntOrNull() }
+
+                out.put("settings", JSONObject().apply {
+                    put("secretKey", node.password.ifEmpty { node.uuid })
+                    put("address", JSONArray(addresses))
+                    put("mtu", node.wgMtu.coerceIn(576, 1500))
+                    if (reservedBytes.isNotEmpty()) {
+                        put("reserved", JSONArray(reservedBytes))
+                    }
+                    put("peers", JSONArray().apply {
+                        put(JSONObject().apply {
+                            put("endpoint", "${node.server}:${node.port}")
+                            put("publicKey", node.publicKey.orEmpty())
+                            put("allowedIPs", JSONArray().apply {
+                                put("0.0.0.0/0")
+                                put("::/0")
+                            })
+                        })
+                    })
+                })
+            }
+
+            ProxyProtocol.HYSTERIA2 -> {
+                out.put("protocol", "hysteria")
+                out.put("settings", JSONObject().apply {
+                    put("version", 2)
+                    put("address", node.server)
+                    put("port", node.port)
+                })
+                out.put("streamSettings", JSONObject().apply {
+                    put("network", "hysteria")
+                    put("hysteriaSettings", JSONObject().apply {
+                        put("version", 2)
+                        put("auth", node.password.ifEmpty { node.uuid })
+                    })
+                    put("security", "tls")
+                    put("tlsSettings", JSONObject().apply {
+                        put("serverName", node.sni.ifEmpty { node.server })
+                        put("allowInsecure", node.allowInsecure || node.security == "insecure")
+                        val alpnList = (node.alpn ?: "h3").split(",").map { it.trim() }.filter { it.isNotEmpty() }
+                        if (alpnList.isNotEmpty()) {
+                            put("alpn", JSONArray(alpnList))
+                        }
+                    })
+                    if (node.obfsType?.equals("salamander", ignoreCase = true) == true && !node.obfsPassword.isNullOrBlank()) {
+                        put("finalmask", JSONObject().apply {
+                            put("udp", JSONArray().apply {
+                                put(JSONObject().apply {
+                                    put("type", "salamander")
+                                    put("settings", JSONObject().apply {
+                                        put("password", node.obfsPassword)
+                                    })
+                                })
+                            })
+                        })
+                    }
+                })
             }
         }
+
         return out
     }
 
-    /**
-     * Generates Amnezia WireGuard INI config representation
-     */
-    fun generateAmneziaWgConfig(node: ProxyNode): String {
-        val ap = node.amneziaParams ?: return ""
-        return """
-            [Interface]
-            PrivateKey = aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=
-            Address = 10.7.0.2/24
-            DNS = 1.1.1.1, 8.8.8.8
-            Jc = ${ap.jc}
-            Jmin = ${ap.jmin}
-            Jmax = ${ap.jmax}
-            S1 = ${ap.s1}
-            S2 = ${ap.s2}
-            H1 = ${ap.h1}
-            H2 = ${ap.h2}
-            H3 = ${ap.h3}
-            H4 = ${ap.h4}
+    private fun buildStreamSettings(node: ProxyNode, useFragment: Boolean): JSONObject {
+        val stream = JSONObject()
+        val net = when (node.network.lowercase()) {
+            "raw", "" -> "tcp"
+            "splithttp" -> "xhttp"
+            else -> node.network.lowercase()
+        }
+        stream.put("network", net)
 
-            [Peer]
-            PublicKey = bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb=
-            Endpoint = ${node.server}:${node.port}
-            AllowedIPs = 0.0.0.0/0
-            PersistentKeepalive = 25
-        """.trimIndent()
+        // Transport-specific settings
+        when (net) {
+            "ws" -> {
+                stream.put("wsSettings", JSONObject().apply {
+                    put("path", node.path?.ifBlank { "/" } ?: "/")
+                    val hostHeader = node.host?.takeIf { it.isNotBlank() } ?: node.sni.takeIf { it.isNotBlank() }
+                    if (!hostHeader.isNullOrBlank()) {
+                        put("host", hostHeader)
+                    }
+                })
+            }
+
+            "grpc" -> {
+                stream.put("grpcSettings", JSONObject().apply {
+                    put("serviceName", node.path.orEmpty())
+                    if (!node.host.isNullOrBlank()) {
+                        put("authority", node.host)
+                    }
+                })
+            }
+
+            "xhttp" -> {
+                stream.put("xhttpSettings", JSONObject().apply {
+                    put("path", node.path?.ifBlank { "/" } ?: "/")
+                    val hostHeader = node.host?.takeIf { it.isNotBlank() }
+                    if (!hostHeader.isNullOrBlank()) {
+                        put("host", hostHeader)
+                    }
+                    put("mode", node.xhttpMode?.takeIf { it.isNotBlank() } ?: "auto")
+                    if (!node.xhttpExtra.isNullOrBlank()) {
+                        try {
+                            put("extra", JSONObject(node.xhttpExtra))
+                        } catch (_: Exception) {
+                        }
+                    }
+                })
+            }
+
+            "httpupgrade" -> {
+                stream.put("httpupgradeSettings", JSONObject().apply {
+                    put("path", node.path?.ifBlank { "/" } ?: "/")
+                    val hostHeader = node.host?.takeIf { it.isNotBlank() } ?: node.sni.takeIf { it.isNotBlank() }
+                    if (!hostHeader.isNullOrBlank()) {
+                        put("host", hostHeader)
+                    }
+                })
+            }
+
+            "h2", "http" -> {
+                stream.put("httpSettings", JSONObject().apply {
+                    put("path", node.path?.ifBlank { "/" } ?: "/")
+                    val hostHeader = node.host?.takeIf { it.isNotBlank() } ?: node.sni.takeIf { it.isNotBlank() }
+                    if (!hostHeader.isNullOrBlank()) {
+                        put("host", JSONArray().put(hostHeader))
+                    }
+                })
+            }
+        }
+
+        // Security (TLS / Reality / None)
+        when (node.security.lowercase()) {
+            "reality" -> {
+                stream.put("security", "reality")
+                stream.put("realitySettings", JSONObject().apply {
+                    put("serverName", node.sni.ifEmpty { node.server })
+                    put("fingerprint", node.fingerprint?.takeIf { it.isNotBlank() } ?: "chrome")
+                    put("publicKey", node.publicKey.orEmpty())
+                    put("shortId", node.shortId.orEmpty())
+                    put("spiderX", "/")
+                })
+            }
+
+            "tls", "insecure" -> {
+                stream.put("security", "tls")
+                stream.put("tlsSettings", JSONObject().apply {
+                    put("serverName", node.sni.ifEmpty { node.server })
+                    put("allowInsecure", node.allowInsecure || node.security == "insecure")
+                    put("fingerprint", node.fingerprint?.takeIf { it.isNotBlank() } ?: "chrome")
+                    val alpnRaw = node.alpn?.takeIf { it.isNotBlank() }
+                    if (!alpnRaw.isNullOrBlank()) {
+                        val alpnArray = JSONArray()
+                        alpnRaw.split(",").map { it.trim() }.filter { it.isNotEmpty() }.forEach {
+                            alpnArray.put(it)
+                        }
+                        if (alpnArray.length() > 0) {
+                            put("alpn", alpnArray)
+                        }
+                    }
+                })
+            }
+
+            else -> {
+                stream.put("security", "none")
+            }
+        }
+
+        // Fragment dialer proxy chaining + domainStrategy
+        if (useFragment) {
+            stream.put("sockopt", JSONObject().apply {
+                put("dialerProxy", "fragment")
+            })
+        }
+
+        return stream
     }
 
-    /**
-     * Generates OpenVPN profile
-     */
-    fun generateOpenVpnProfile(node: ProxyNode): String {
-        return node.openVpnConfig ?: """
-            client
-            dev tun
-            proto tcp
-            remote ${node.server} ${node.port}
-            resolv-retry infinite
-            nobind
-            persist-key
-            persist-tun
-            remote-cert-tls server
-            cipher AES-256-GCM
-            auth SHA256
-            verb 3
-            <ca>
-            -----BEGIN CERTIFICATE-----
-            MIIBszCCARqgAwIBAgIU...V2reyBND-CA...
-            -----END CERTIFICATE-----
-            </ca>
-        """.trimIndent()
+    private fun isIpAddress(host: String): Boolean {
+        val ipv4Regex = Regex("^\\d{1,3}(\\.\\d{1,3}){3}$")
+        return ipv4Regex.matches(host) || host.contains(":")
     }
 }

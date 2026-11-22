@@ -3,11 +3,7 @@ package com.example.ui.screens
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.net.Uri
-import android.provider.OpenableColumns
 import android.widget.Toast
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -36,13 +32,9 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Dns
-import androidx.compose.material.icons.filled.FileOpen
-import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.filled.UploadFile
-import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -84,9 +76,7 @@ import androidx.compose.ui.unit.sp
 import com.example.data.BndTelegramLinks
 import com.example.model.ProxyNode
 import com.example.model.ProxyProtocol
-import com.example.parser.ProxyConfigParser
 import com.example.ui.components.BndTopHeaderBar
-import com.example.ui.components.OpenVpnAuthDialog
 import com.example.ui.theme.BndBgDark
 import com.example.ui.theme.BndErrorRed
 import com.example.ui.theme.BndNeonPurple
@@ -118,9 +108,6 @@ fun ServerListScreen(
     var selectedProtocolFilter by remember { mutableStateOf<ProxyProtocol?>(null) }
     var showImportDialog by remember { mutableStateOf(false) }
 
-    // Dynamic OpenVPN authentication state: Pair(fileContent, profileName)
-    var pendingOpenVpnAuth by remember { mutableStateOf<Pair<String, String>?>(null) }
-
     val filteredNodes = remember(nodes, searchQuery, selectedProtocolFilter) {
         nodes.filter { node ->
             val matchesQuery = searchQuery.isBlank() ||
@@ -137,9 +124,8 @@ fun ServerListScreen(
             .background(BndBgDark)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // Header with BND Logo
             BndTopHeaderBar(
-                subtitle = "سرورها و کانفیگ‌ها (${nodes.size})",
+                subtitle = "سرورهای Xray و کانفیگ‌ها (${nodes.size})",
                 actions = {
                     if (nodes.isNotEmpty()) {
                         IconButton(
@@ -273,7 +259,6 @@ fun ServerListScreen(
             }
         }
 
-        // Floating Action Button to Import
         FloatingActionButton(
             onClick = { showImportDialog = true },
             modifier = Modifier
@@ -287,53 +272,16 @@ fun ServerListScreen(
             Icon(Icons.Default.Add, contentDescription = "Add node")
         }
 
-        // Main Import Dialog (Text / OpenVPN File Picker / Subscription URL)
         if (showImportDialog) {
             ImportNodeDialog(
                 initialSubUrl = savedSubUrl,
                 onDismiss = { showImportDialog = false },
                 onImportRaw = { text ->
-                    if (ProxyConfigParser.isOpenVpnConfig(text)) {
-                        if (ProxyConfigParser.checkOpenVpnRequiresAuth(text)) {
-                            // Requires username & password
-                            pendingOpenVpnAuth = Pair(text, "OpenVPN Profile")
-                        } else {
-                            // No auth directive / credentials embedded -> process immediately!
-                            viewModel.importOpenVpnProfile(text, "OpenVPN Profile")
-                            showImportDialog = false
-                        }
-                    } else {
-                        viewModel.importConfigText(text)
-                        showImportDialog = false
-                    }
-                },
-                onOpenVpnAuthRequired = { content, filename ->
-                    pendingOpenVpnAuth = Pair(content, filename)
-                },
-                onImportOpenVpnNoAuth = { content, filename ->
-                    viewModel.importOpenVpnProfile(content, filename)
+                    viewModel.importConfigText(text)
                     showImportDialog = false
                 },
                 onImportSubscription = { url ->
                     viewModel.importSubscriptionUrl(url)
-                    showImportDialog = false
-                }
-            )
-        }
-
-        // Dynamic OpenVPN Credentials Dialog (Username & Password)
-        pendingOpenVpnAuth?.let { (content, filename) ->
-            OpenVpnAuthDialog(
-                profileName = filename,
-                onDismiss = { pendingOpenVpnAuth = null },
-                onConfirm = { username, password ->
-                    viewModel.importOpenVpnProfile(
-                        configText = content,
-                        profileName = filename,
-                        username = username,
-                        password = password
-                    )
-                    pendingOpenVpnAuth = null
                     showImportDialog = false
                 }
             )
@@ -394,7 +342,7 @@ private fun CleanEmptyServerState(
         Spacer(modifier = Modifier.height(8.dp))
 
         Text(
-            text = "برای شروع می‌توانید فایل کانفیگ .ovpn از حافظه انتخاب کرده، کانفیگ مستقیم اضافه کنید، یا لینک سابسکریپشن را وارد نمایید.",
+            text = "پشتیبانی اختصاصی از هسته Xray: VLESS (Reality, XHTTP, gRPC, WS)، VMess، Trojan، Shadowsocks، SOCKS، HTTP، WireGuard و Hysteria2",
             color = BndTextSecondary,
             fontSize = 12.sp,
             textAlign = TextAlign.Center,
@@ -414,7 +362,7 @@ private fun CleanEmptyServerState(
         ) {
             Icon(Icons.Default.Add, contentDescription = null, tint = Color.White)
             Spacer(modifier = Modifier.width(8.dp))
-            Text("افزودن کانفیگ / فایل .ovpn یا سابسکریپشن", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            Text("افزودن کانفیگ یا لینک سابسکریپشن", fontSize = 13.sp, fontWeight = FontWeight.Bold)
         }
 
         Spacer(modifier = Modifier.height(10.dp))
@@ -430,7 +378,12 @@ private fun CleanEmptyServerState(
         ) {
             Icon(Icons.Default.Bolt, contentDescription = null, tint = BndOrchidTertiary)
             Spacer(modifier = Modifier.width(8.dp))
-            Text("خرید اشتراک اختصاصی از ربات (${BndTelegramLinks.STORE_BOT_HANDLE})", color = BndOrchidTertiary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Text(
+                "خرید اشتراک اختصاصی از ربات (${BndTelegramLinks.STORE_BOT_HANDLE})",
+                color = BndOrchidTertiary,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold
+            )
         }
     }
 }
@@ -481,7 +434,7 @@ private fun ProtocolFilterChips(
                 onClick = { onSelect(null) }
             )
         }
-        items(ProxyProtocol.values()) { proto ->
+        items(ProxyProtocol.entries) { proto ->
             FilterChipItem(
                 label = proto.displayName,
                 isSelected = selected == proto,
@@ -593,16 +546,16 @@ private fun ServerListItem(
                             )
                         }
 
-                        if (node.protocol == ProxyProtocol.OPENVPN && !node.openVpnUsername.isNullOrEmpty()) {
+                        if (node.network.isNotBlank() && node.network != "tcp") {
                             Box(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(4.dp))
-                                    .background(BndSuccessGreen.copy(alpha = 0.2f))
+                                    .background(BndVioletPrimary.copy(alpha = 0.2f))
                                     .padding(horizontal = 5.dp, vertical = 1.dp)
                             ) {
                                 Text(
-                                    text = "Auth: ${node.openVpnUsername}",
-                                    color = BndSuccessGreen,
+                                    text = node.network.uppercase(),
+                                    color = BndSoftPurple,
                                     fontSize = 9.sp,
                                     fontWeight = FontWeight.SemiBold
                                 )
@@ -674,7 +627,7 @@ private fun ServerListItem(
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("کپی کانفیگ / مشخصات", color = BndTextPrimary) },
+                            text = { Text("کپی لینک کانفیگ", color = BndTextPrimary) },
                             onClick = {
                                 menuExpanded = false
                                 onCopy()
@@ -705,8 +658,6 @@ fun ImportNodeDialog(
     initialSubUrl: String,
     onDismiss: () -> Unit,
     onImportRaw: (String) -> Unit,
-    onOpenVpnAuthRequired: (content: String, filename: String) -> Unit,
-    onImportOpenVpnNoAuth: (content: String, filename: String) -> Unit,
     onImportSubscription: (String) -> Unit
 ) {
     val context = LocalContext.current
@@ -714,45 +665,12 @@ fun ImportNodeDialog(
     var rawInputText by remember { mutableStateOf("") }
     var subscriptionInputUrl by remember { mutableStateOf(initialSubUrl) }
 
-    // System File Picker for OpenVPN (.ovpn and .conf files)
-    val openVpnFilePicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { uri: Uri? ->
-        if (uri != null) {
-            try {
-                val filename = getFileName(context, uri) ?: "OpenVPN_Profile.ovpn"
-                val inputStream = context.contentResolver.openInputStream(uri)
-                val content = inputStream?.bufferedReader()?.use { it.readText() }.orEmpty()
-                if (content.isNotBlank()) {
-                    if (ProxyConfigParser.isOpenVpnConfig(content)) {
-                        // Dynamic authentication inspection
-                        if (ProxyConfigParser.checkOpenVpnRequiresAuth(content)) {
-                            // Requires credentials
-                            onOpenVpnAuthRequired(content, filename)
-                        } else {
-                            // Credentials not required / already embedded -> import immediately!
-                            onImportOpenVpnNoAuth(content, filename)
-                        }
-                    } else {
-                        // General config file (e.g. list of URLs)
-                        onImportRaw(content)
-                    }
-                } else {
-                    Toast.makeText(context, "فایل انتخاب شده خالی است", Toast.LENGTH_SHORT).show()
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-                Toast.makeText(context, "خطا در خواندن فایل انتخابی", Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
-
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = BndSurfaceDark,
         title = {
             Text(
-                text = "افزودن کانفیگ یا سابسکریپشن",
+                text = "افزودن کانفیگ Xray یا سابسکریپشن",
                 color = BndTextPrimary,
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Bold
@@ -774,17 +692,12 @@ fun ImportNodeDialog(
                     Tab(
                         selected = selectedTab == 0,
                         onClick = { selectedTab = 0 },
-                        text = { Text("متن یا URL", fontSize = 11.sp) }
+                        text = { Text("متن / لینک کانفیگ", fontSize = 12.sp) }
                     )
                     Tab(
                         selected = selectedTab == 1,
                         onClick = { selectedTab = 1 },
-                        text = { Text("فایل OpenVPN", fontSize = 11.sp) }
-                    )
-                    Tab(
-                        selected = selectedTab == 2,
-                        onClick = { selectedTab = 2 },
-                        text = { Text("سابسکریپشن", fontSize = 11.sp) }
+                        text = { Text("لینک سابسکریپشن", fontSize = 12.sp) }
                     )
                 }
 
@@ -792,9 +705,8 @@ fun ImportNodeDialog(
 
                 when (selectedTab) {
                     0 -> {
-                        // Tab 0: Raw Text or URIs
                         Text(
-                            text = "پشتیبانی از vless://, hy2://, tuic://, amnezia://, vmess://, trojan://, openvpn:// و متن .ovpn:",
+                            text = "پشتیبانی از vless://, vmess://, v2ray://, trojan://, ss://, socks://, http://, wireguard://, hy2://:",
                             color = BndTextSecondary,
                             fontSize = 11.sp
                         )
@@ -819,119 +731,19 @@ fun ImportNodeDialog(
                             )
                         )
                         Spacer(modifier = Modifier.height(8.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                        TextButton(
+                            onClick = {
+                                val clip = getFromClipboard(context)
+                                if (clip.isNotEmpty()) rawInputText = clip
+                            }
                         ) {
-                            TextButton(
-                                onClick = {
-                                    val clip = getFromClipboard(context)
-                                    if (clip.isNotEmpty()) rawInputText = clip
-                                }
-                            ) {
-                                Icon(Icons.Default.ContentPaste, contentDescription = null, tint = BndNeonPurple)
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("پیست از کلیپ‌بورد", color = BndNeonPurple, fontSize = 12.sp)
-                            }
-
-                            // Quick file picker shortcut
-                            TextButton(
-                                onClick = {
-                                    openVpnFilePicker.launch(arrayOf("*/*", "application/x-openvpn-profile", "text/plain"))
-                                }
-                            ) {
-                                Icon(Icons.Default.FileOpen, contentDescription = null, tint = BndOrchidTertiary)
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("انتخاب فایل", color = BndOrchidTertiary, fontSize = 12.sp)
-                            }
+                            Icon(Icons.Default.ContentPaste, contentDescription = null, tint = BndNeonPurple)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("پیست از کلیپ‌بورد", color = BndNeonPurple, fontSize = 12.sp)
                         }
                     }
 
                     1 -> {
-                        // Tab 1: Dedicated OpenVPN File Picker
-                        Card(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(14.dp))
-                                .clickable {
-                                    openVpnFilePicker.launch(arrayOf("*/*", "application/x-openvpn-profile", "text/plain"))
-                                },
-                            colors = CardDefaults.cardColors(containerColor = BndSurfaceCard),
-                            border = CardDefaults.outlinedCardBorder().copy(
-                                brush = Brush.horizontalGradient(
-                                    listOf(BndVioletPrimary, BndOrchidTertiary)
-                                )
-                            )
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(20.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(54.dp)
-                                        .clip(CircleShape)
-                                        .background(BndVioletPrimary.copy(alpha = 0.2f)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.UploadFile,
-                                        contentDescription = null,
-                                        tint = BndOrchidTertiary,
-                                        modifier = Modifier.size(32.dp)
-                                    )
-                                }
-
-                                Spacer(modifier = Modifier.height(12.dp))
-
-                                Text(
-                                    text = "انتخاب فایل .ovpn یا .conf از حافظه",
-                                    color = BndTextPrimary,
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-
-                                Spacer(modifier = Modifier.height(4.dp))
-
-                                Text(
-                                    text = "پشتیبانی از ساختار استاندارد OpenVPN و احراز هویت خودکار",
-                                    color = BndTextMuted,
-                                    fontSize = 11.sp,
-                                    textAlign = TextAlign.Center
-                                )
-
-                                Spacer(modifier = Modifier.height(14.dp))
-
-                                Button(
-                                    onClick = {
-                                        openVpnFilePicker.launch(arrayOf("*/*", "application/x-openvpn-profile", "text/plain"))
-                                    },
-                                    modifier = Modifier.testTag("openvpn_choose_file_button"),
-                                    colors = ButtonDefaults.buttonColors(containerColor = BndVioletPrimary),
-                                    shape = RoundedCornerShape(10.dp)
-                                ) {
-                                    Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text("مرور فایل‌ها (Browse)", fontSize = 12.sp)
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        Text(
-                            text = "• در صورت وجود دستور auth-user-pass، فرم دریافت یوزرنیم و پسورد نمایش داده می‌شود.\n• در صورت عدم نیاز به احراز هویت، کانفیگ فوراً اضافه خواهد شد.",
-                            color = BndTextSecondary,
-                            fontSize = 10.sp,
-                            lineHeight = 15.sp
-                        )
-                    }
-
-                    2 -> {
-                        // Tab 2: Subscription URL
                         Text(
                             text = "لینک سابسکریپشن (Subscription URL) را وارد نمایید:",
                             color = BndTextSecondary,
@@ -973,20 +785,18 @@ fun ImportNodeDialog(
             }
         },
         confirmButton = {
-            if (selectedTab != 1) {
-                Button(
-                    onClick = {
-                        if (selectedTab == 0) {
-                            onImportRaw(rawInputText)
-                        } else {
-                            onImportSubscription(subscriptionInputUrl)
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = BndVioletPrimary),
-                    modifier = Modifier.testTag("confirm_import_button")
-                ) {
-                    Text("بارگذاری سرورها")
-                }
+            Button(
+                onClick = {
+                    if (selectedTab == 0) {
+                        onImportRaw(rawInputText)
+                    } else {
+                        onImportSubscription(subscriptionInputUrl)
+                    }
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = BndVioletPrimary),
+                modifier = Modifier.testTag("confirm_import_button")
+            ) {
+                Text("بارگذاری سرورها")
             }
         },
         dismissButton = {
@@ -1006,31 +816,4 @@ private fun copyToClipboard(context: Context, text: String) {
 private fun getFromClipboard(context: Context): String {
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     return clipboard.primaryClip?.getItemAt(0)?.text?.toString().orEmpty()
-}
-
-private fun getFileName(context: Context, uri: Uri): String? {
-    var result: String? = null
-    if (uri.scheme == "content") {
-        try {
-            val cursor = context.contentResolver.query(uri, null, null, null, null)
-            cursor?.use {
-                if (it.moveToFirst()) {
-                    val index = it.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    if (index != -1) {
-                        result = it.getString(index)
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-    if (result == null) {
-        val path = uri.path
-        val cut = path?.lastIndexOf('/')
-        if (cut != null && cut != -1) {
-            result = path.substring(cut + 1)
-        }
-    }
-    return result
 }

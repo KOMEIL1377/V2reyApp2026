@@ -219,7 +219,7 @@ private fun StoreHeroBanner() {
                 Spacer(modifier = Modifier.height(6.dp))
 
                 Text(
-                    text = "پشتیبانی از پروتکل‌های نسل جدید VLESS Reality، Hysteria 2، TUIC و AmneziaWG سازگار با تمامی اپراتورهای همراه اول، ایرانسل و مخابرات.",
+                    text = "پشتیبانی از پروتکل‌های هسته Xray شامل VLESS Reality، XHTTP، VMess، Trojan، Shadowsocks، WireGuard و Hysteria 2 سازگار با تمامی اپراتورهای همراه اول، ایرانسل و مخابرات.",
                     color = Color.White.copy(alpha = 0.9f),
                     fontSize = 12.sp,
                     lineHeight = 18.sp
