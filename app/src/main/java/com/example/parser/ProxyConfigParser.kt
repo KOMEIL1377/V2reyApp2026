@@ -1,7 +1,10 @@
 package com.example.parser
 
+import com.example.model.AccountSource
+import com.example.model.NodeOrigin
 import com.example.model.ProxyNode
 import com.example.model.ProxyProtocol
+import com.example.model.SubscriptionStatus
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
@@ -146,14 +149,19 @@ object ProxyConfigParser {
         val userInfo = uri.userInfo ?: return null
         val host = uri.host ?: return null
         val port = if (uri.port > 0) uri.port else 443
-        val fragment = decodeSafe(uri.fragment ?: "VLESS Node").ifBlank { host }
+        val fragment = decodeFragmentSafe(uri.fragment ?: "VLESS Node").ifBlank { host }
 
         val security = uri.getQueryParameter("security")?.lowercase()?.ifBlank { "none" } ?: "none"
-        val sni = uri.getQueryParameter("sni") ?: uri.getQueryParameter("peer") ?: ""
+        val rawSni = uri.getQueryParameter("sni") ?: uri.getQueryParameter("peer") ?: ""
         val flow = uri.getQueryParameter("flow")?.takeIf { it.isNotBlank() }
         val network = uri.getQueryParameter("type")?.lowercase()?.ifBlank { "tcp" } ?: "tcp"
         val path = uri.getQueryParameter("path") ?: uri.getQueryParameter("serviceName")
         val headerHost = uri.getQueryParameter("host")
+        val sni = if (security == "tls" || security == "reality") {
+            rawSni.ifBlank { headerHost ?: host }
+        } else {
+            rawSni
+        }
         val pbk = uri.getQueryParameter("pbk")
         val sid = uri.getQueryParameter("sid")
         val fp = uri.getQueryParameter("fp")?.takeIf { it.isNotBlank() } ?: "chrome"
@@ -171,7 +179,7 @@ object ProxyConfigParser {
             port = port,
             uuid = decodeSafe(userInfo),
             security = security,
-            sni = sni.ifBlank { headerHost ?: host },
+            sni = sni,
             flow = flow,
             network = network,
             host = headerHost,
@@ -203,7 +211,8 @@ object ProxyConfigParser {
             val net = json.optString("net", "tcp").lowercase().ifBlank { "tcp" }
             val tls = json.optString("tls", "none").lowercase().ifBlank { "none" }
             val headerHost = json.optString("host", "").takeIf { it.isNotBlank() }
-            val sni = json.optString("sni", "").ifBlank { headerHost ?: host }
+            val rawSni = json.optString("sni", "")
+            val sni = if (tls == "tls") rawSni.ifBlank { headerHost ?: host } else rawSni
             val path = json.optString("path", "").takeIf { it.isNotBlank() }
             val scy = json.optString("scy", "auto").ifBlank { "auto" }
             val fp = json.optString("fp", "chrome").takeIf { it.isNotBlank() } ?: "chrome"
@@ -235,7 +244,7 @@ object ProxyConfigParser {
         val host = uri.host ?: return null
         val uuid = uri.userInfo ?: return null
         val port = if (uri.port > 0) uri.port else 443
-        val name = decodeSafe(uri.fragment ?: "VMess Node").ifBlank { host }
+        val name = decodeFragmentSafe(uri.fragment ?: "VMess Node").ifBlank { host }
         return ProxyNode(
             id = UUID.randomUUID().toString(),
             name = name,
@@ -258,7 +267,7 @@ object ProxyConfigParser {
         val password = uri.userInfo ?: return null
         val host = uri.host ?: return null
         val port = if (uri.port > 0) uri.port else 443
-        val name = decodeSafe(uri.fragment ?: "Trojan Node").ifBlank { host }
+        val name = decodeFragmentSafe(uri.fragment ?: "Trojan Node").ifBlank { host }
         val sni = uri.getQueryParameter("sni") ?: uri.getQueryParameter("peer") ?: host
         val network = uri.getQueryParameter("type")?.lowercase() ?: "tcp"
         val headerHost = uri.getQueryParameter("host")
@@ -294,7 +303,7 @@ object ProxyConfigParser {
         val password = decodeSafe(uri.userInfo ?: "")
         val host = uri.host ?: return null
         val port = if (uri.port > 0) uri.port else 443
-        val name = decodeSafe(uri.fragment ?: "Hysteria 2 Node").ifBlank { host }
+        val name = decodeFragmentSafe(uri.fragment ?: "Hysteria 2 Node").ifBlank { host }
         val sni = uri.getQueryParameter("sni") ?: uri.getQueryParameter("peer") ?: host
         val insecure = isTruthy(uri.getQueryParameter("insecure")) ||
             isTruthy(uri.getQueryParameter("allowInsecure"))
@@ -329,7 +338,7 @@ object ProxyConfigParser {
         }
 
         val uri = parseSimpleUri(normalized) ?: return null
-        val rawFragment = decodeSafe(uri.fragment ?: "Shadowsocks Node")
+        val rawFragment = decodeFragmentSafe(uri.fragment ?: "Shadowsocks Node")
 
         // Case 1: ss://BASE64(method:password@host:port)#name
         if (uri.userInfo == null && uri.host != null) {
@@ -383,7 +392,7 @@ object ProxyConfigParser {
 
     private fun parseSocks(uriStr: String): ProxyNode? {
         val uri = parseSimpleUri(uriStr) ?: return null
-        val rawFragment = decodeSafe(uri.fragment ?: "SOCKS5 Proxy")
+        val rawFragment = decodeFragmentSafe(uri.fragment ?: "SOCKS5 Proxy")
 
         // Support base64-encoded user:pass or base64(user:pass@host:port)
         if (uri.userInfo == null && uri.host != null && uri.port <= 0) {
@@ -450,7 +459,7 @@ object ProxyConfigParser {
         } else {
             Pair("", "")
         }
-        val name = decodeSafe(uri.fragment ?: "HTTP Proxy").ifBlank { host }
+        val name = decodeFragmentSafe(uri.fragment ?: "HTTP Proxy").ifBlank { host }
         val isTls = uri.scheme == "https"
 
         return ProxyNode(
@@ -475,7 +484,7 @@ object ProxyConfigParser {
         val secretKey = decodeSafe(uri.userInfo ?: "").trim()
         val host = uri.host ?: return null
         val port = if (uri.port > 0) uri.port else 51820
-        val name = decodeSafe(uri.fragment ?: "WireGuard Node").ifBlank { host }
+        val name = decodeFragmentSafe(uri.fragment ?: "WireGuard Node").ifBlank { host }
         val peerPublicKey = uri.getQueryParameter("publickey")
             ?: uri.getQueryParameter("pbk")
             ?: uri.getQueryParameter("publicKey")
@@ -521,7 +530,7 @@ object ProxyConfigParser {
         val userInfo = uri.userInfo ?: ""
         val host = uri.host ?: return null
         val port = if (uri.port > 0) uri.port else 443
-        val name = decodeSafe(uri.fragment ?: "V2Ray Node").ifBlank { host }
+        val name = decodeFragmentSafe(uri.fragment ?: "V2Ray Node").ifBlank { host }
         val security = uri.getQueryParameter("security") ?: uri.getQueryParameter("tls") ?: "auto"
         val network = uri.getQueryParameter("type") ?: "tcp"
         val sni = uri.getQueryParameter("sni") ?: host
@@ -556,37 +565,391 @@ object ProxyConfigParser {
         }
     }
 
+    data class ImportParseResult(
+        val nodes: List<ProxyNode>,
+        val errorMessage: String? = null
+    )
+
+    data class SubscriptionFetchResult(
+        val nodes: List<ProxyNode>,
+        val status: SubscriptionStatus?,
+        val errorMessage: String? = null
+    )
+
+    enum class QrImportType {
+        SUBSCRIPTION_URL,
+        CONFIG,
+        INVALID
+    }
+
+    data class QrClassificationResult(
+        val type: QrImportType,
+        val normalizedPayload: String,
+        val nodes: List<ProxyNode> = emptyList(),
+        val errorMessage: String? = null
+    )
+
+    fun classifyQrPayload(rawText: String): QrClassificationResult {
+        val trimmed = rawText.trim()
+        if (trimmed.isEmpty()) {
+            return QrClassificationResult(
+                type = QrImportType.INVALID,
+                normalizedPayload = "",
+                errorMessage = "محتوای QR کد خالی است"
+            )
+        }
+
+        if (trimmed.startsWith("http://", ignoreCase = true) ||
+            trimmed.startsWith("https://", ignoreCase = true)
+        ) {
+            val parsedUri = parseSimpleUri(trimmed)
+            val isProxyUri = parsedUri != null && (
+                !parsedUri.userInfo.isNullOrBlank() ||
+                    (!parsedUri.fragment.isNullOrBlank() && parsedUri.path.isNullOrBlank() && parsedUri.queryParams.isEmpty())
+                )
+            if (!isProxyUri && parsedUri?.host != null) {
+                return QrClassificationResult(
+                    type = QrImportType.SUBSCRIPTION_URL,
+                    normalizedPayload = trimmed
+                )
+            }
+        }
+
+        val parseRes = parseBulkTextWithValidation(trimmed, NodeOrigin.MANUAL)
+        if (parseRes.nodes.isNotEmpty()) {
+            return QrClassificationResult(
+                type = QrImportType.CONFIG,
+                normalizedPayload = trimmed,
+                nodes = parseRes.nodes
+            )
+        }
+
+        return QrClassificationResult(
+            type = QrImportType.INVALID,
+            normalizedPayload = trimmed,
+            errorMessage = "فرمت QR کد معتبر نیست. لطفاً QR کد کانفیگ Xray یا لینک اشتراک اسکن کنید."
+        )
+    }
+
     fun parseBulkText(text: String): List<ProxyNode> {
-        val nodes = mutableListOf<ProxyNode>()
+        return parseBulkTextWithValidation(text, NodeOrigin.MANUAL).nodes
+    }
+
+    fun parseBulkTextWithValidation(
+        text: String,
+        origin: NodeOrigin = NodeOrigin.MANUAL
+    ): ImportParseResult {
         val trimmed = text.trim()
+        if (trimmed.isEmpty()) {
+            return ImportParseResult(emptyList(), "متن کانفیگ خالی است")
+        }
+
+        // 1. Check if raw input is Xray JSON config (object or array)
+        if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+            val jsonResult = parseXrayJsonConfigs(trimmed, origin)
+            if (jsonResult.nodes.isNotEmpty() || jsonResult.errorMessage != null) {
+                return jsonResult
+            }
+        }
+
+        // 2. Check if base64-decoded payload is Xray JSON or URI lines
         val decoded = decodeBase64Flexible(trimmed)
+        if (decoded != null) {
+            val decodedTrimmed = decoded.trim()
+            if (decodedTrimmed.startsWith("{") || decodedTrimmed.startsWith("[")) {
+                val jsonResult = parseXrayJsonConfigs(decodedTrimmed, origin)
+                if (jsonResult.nodes.isNotEmpty()) {
+                    return jsonResult
+                }
+            }
+        }
+
         val contentToParse = if (decoded != null && decoded.contains("://")) {
             decoded
         } else {
             trimmed
         }
 
+        val nodes = mutableListOf<ProxyNode>()
         contentToParse.lines().forEach { line ->
-            parseLine(line)?.let { nodes.add(it) }
+            parseLine(line)?.let { nodes.add(it.copy(origin = origin)) }
         }
-        return nodes
+
+        return if (nodes.isNotEmpty()) {
+            ImportParseResult(nodes, null)
+        } else {
+            ImportParseResult(emptyList(), "فرمت کانفیگ یا Xray JSON معتبر یافت نشد")
+        }
+    }
+
+    fun parseXrayJsonConfigs(
+        jsonText: String,
+        origin: NodeOrigin = NodeOrigin.MANUAL
+    ): ImportParseResult {
+        val trimmed = jsonText.trim()
+        return try {
+            if (trimmed.startsWith("[")) {
+                val array = org.json.JSONArray(trimmed)
+                val nodes = mutableListOf<ProxyNode>()
+                var lastErr: String? = null
+                for (i in 0 until array.length()) {
+                    val obj = array.optJSONObject(i) ?: continue
+                    val singleRes = validateAndBuildXrayJsonNode(obj, i + 1, origin)
+                    if (singleRes.first != null) {
+                        nodes.add(singleRes.first!!)
+                    } else if (singleRes.second != null) {
+                        lastErr = singleRes.second
+                    }
+                }
+                if (nodes.isNotEmpty()) {
+                    ImportParseResult(nodes, null)
+                } else {
+                    ImportParseResult(emptyList(), lastErr ?: "آرایه Xray JSON فاقد کانفیگ معتبر است")
+                }
+            } else {
+                val obj = JSONObject(trimmed)
+                val (node, err) = validateAndBuildXrayJsonNode(obj, 1, origin)
+                if (node != null) {
+                    ImportParseResult(listOf(node), null)
+                } else {
+                    ImportParseResult(emptyList(), err ?: "ساختار Xray JSON نامعتبر است")
+                }
+            }
+        } catch (e: Exception) {
+            ImportParseResult(emptyList(), "خطای ساختار JSON: ${e.message ?: "فرمت نامعتبر"}")
+        }
+    }
+
+    private fun validateAndBuildXrayJsonNode(
+        rootObj: JSONObject,
+        index: Int,
+        origin: NodeOrigin
+    ): Pair<ProxyNode?, String?> {
+        // Accept full Xray JSON config OR standalone outbound object (has "protocol" at top level)
+        val normalizedRoot = JSONObject(rootObj.toString())
+        val outbounds = normalizedRoot.optJSONArray("outbounds")
+            ?: if (normalizedRoot.has("protocol")) {
+                val wrapped = JSONObject()
+                wrapped.put("outbounds", org.json.JSONArray().put(normalizedRoot))
+                return validateAndBuildXrayJsonNode(wrapped, index, origin)
+            } else {
+                null
+            }
+
+        if (outbounds == null || outbounds.length() == 0) {
+            return null to "کانفیگ Xray JSON باید دارای بخش 'outbounds' غیرخالی باشد"
+        }
+
+        // Find primary proxy outbound (non-direct/blackhole/dns)
+        var primaryOutbound: JSONObject? = null
+        for (i in 0 until outbounds.length()) {
+            val ob = outbounds.optJSONObject(i) ?: continue
+            val proto = ob.optString("protocol").trim().lowercase()
+            if (proto.isEmpty()) continue
+            if (proto !in setOf("freedom", "blackhole", "dns", "loopback")) {
+                primaryOutbound = ob
+                break
+            }
+            if (primaryOutbound == null) {
+                primaryOutbound = ob
+            }
+        }
+
+        if (primaryOutbound == null) {
+            return null to "هیچ outbound معتبری با فیلد 'protocol' در Xray JSON یافت نشد"
+        }
+
+        val protoName = primaryOutbound.optString("protocol").trim().lowercase()
+        val supportedProtocols = setOf(
+            "vless", "vmess", "trojan", "shadowsocks", "socks", "http",
+            "wireguard", "hysteria", "freedom", "blackhole"
+        )
+        if (protoName !in supportedProtocols) {
+            return null to "پروتکل '$protoName' در Xray JSON پشتیبانی نمی‌شود"
+        }
+
+        // Extract host & port for UI badge and TCP ping check
+        val (extractedHost, extractedPort) = extractEndpointFromXrayOutbound(primaryOutbound, protoName)
+        val streamSettings = primaryOutbound.optJSONObject("streamSettings")
+        val net = streamSettings?.optString("network")?.takeIf { it.isNotBlank() } ?: "tcp"
+        val sec = streamSettings?.optString("security")?.takeIf { it.isNotBlank() } ?: "none"
+
+        val title = rootObj.optString("remarks").takeIf { it.isNotBlank() }
+            ?: rootObj.optString("remark").takeIf { it.isNotBlank() }
+            ?: rootObj.optString("name").takeIf { it.isNotBlank() }
+            ?: rootObj.optString("ps").takeIf { it.isNotBlank() }
+            ?: primaryOutbound.optString("tag").takeIf { it.isNotBlank() && it != "proxy" }
+            ?: if (extractedHost.isNotBlank() && extractedHost != "custom-xray") {
+                "Xray JSON ($extractedHost)"
+            } else {
+                "Xray JSON #$index"
+            }
+
+        val canonicalJson = normalizedRoot.toString(2)
+        val node = ProxyNode(
+            id = UUID.randomUUID().toString(),
+            name = title,
+            protocol = ProxyProtocol.CUSTOM_JSON,
+            server = extractedHost.ifBlank { "custom-xray" },
+            port = if (extractedPort > 0) extractedPort else 443,
+            security = sec,
+            network = net,
+            rawUri = canonicalJson,
+            rawXrayJson = canonicalJson,
+            origin = origin,
+            flag = detectFlag(title, extractedHost)
+        )
+        return node to null
+    }
+
+    private fun extractEndpointFromXrayOutbound(outbound: JSONObject, proto: String): Pair<String, Int> {
+        val settings = outbound.optJSONObject("settings") ?: return "" to 443
+        when (proto) {
+            "vless", "vmess" -> {
+                val first = settings.optJSONArray("vnext")?.optJSONObject(0)
+                if (first != null) {
+                    return first.optString("address", "") to first.optInt("port", 443)
+                }
+            }
+            "trojan", "shadowsocks", "socks", "http" -> {
+                val first = settings.optJSONArray("servers")?.optJSONObject(0)
+                if (first != null) {
+                    return first.optString("address", "") to first.optInt("port", 443)
+                }
+            }
+            "hysteria" -> {
+                val addr = settings.optString("address", "")
+                val port = settings.optInt("port", 443)
+                if (addr.isNotBlank()) return addr to port
+            }
+            "wireguard" -> {
+                val ep = settings.optJSONArray("peers")?.optJSONObject(0)?.optString("endpoint", "").orEmpty()
+                if (ep.contains(":")) {
+                    val lastColon = ep.lastIndexOf(':')
+                    val h = ep.substring(0, lastColon).trim('[', ']')
+                    val p = ep.substring(lastColon + 1).toIntOrNull() ?: 51820
+                    return h to p
+                }
+            }
+        }
+        return "" to 443
     }
 
     suspend fun fetchSubscription(url: String): List<ProxyNode> {
+        return fetchSubscriptionWithInfo(url).nodes
+    }
+
+    suspend fun fetchSubscriptionWithInfo(url: String): SubscriptionFetchResult {
         return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             try {
+                val trimmedUrl = url.trim()
                 val request = Request.Builder()
-                    .url(url.trim())
+                    .url(trimmedUrl)
                     .header("User-Agent", "v2rayNG/1.9.10 (Android; Xray-core)")
                     .build()
                 val response = httpClient.newCall(request).execute()
-                if (!response.isSuccessful) return@withContext emptyList()
+                if (!response.isSuccessful) {
+                    return@withContext SubscriptionFetchResult(
+                        nodes = emptyList(),
+                        status = null,
+                        errorMessage = "خطای دریافت سابسکریپشن (کد ${response.code})"
+                    )
+                }
+                val userInfoHeader = response.header("subscription-userinfo")
+                val profileTitleHeader = response.header("profile-title")
                 val body = response.body?.string().orEmpty()
-                parseBulkText(body)
+                val parseRes = parseBulkTextWithValidation(body, NodeOrigin.SUBSCRIPTION)
+                val status = buildManualSubscriptionStatus(
+                    url = trimmedUrl,
+                    userInfoHeader = userInfoHeader,
+                    profileTitleHeader = profileTitleHeader
+                )
+                SubscriptionFetchResult(
+                    nodes = parseRes.nodes,
+                    status = status,
+                    errorMessage = if (parseRes.nodes.isEmpty()) parseRes.errorMessage else null
+                )
             } catch (e: Exception) {
                 e.printStackTrace()
-                emptyList()
+                SubscriptionFetchResult(
+                    nodes = emptyList(),
+                    status = null,
+                    errorMessage = "خطای شبکه در دریافت سابسکریپشن: ${e.localizedMessage ?: e.javaClass.simpleName}"
+                )
             }
+        }
+    }
+
+    fun parseSubscriptionUserInfoHeader(
+        url: String,
+        userInfoHeader: String?,
+        profileTitleHeader: String? = null
+    ): SubscriptionStatus? {
+        return buildManualSubscriptionStatus(url, userInfoHeader, profileTitleHeader)
+    }
+
+    private fun buildManualSubscriptionStatus(
+        url: String,
+        userInfoHeader: String?,
+        profileTitleHeader: String?
+    ): SubscriptionStatus? {
+        val rawTitle = decodeProfileTitle(profileTitleHeader)
+            ?: runCatching { java.net.URI(url).host }.getOrNull()?.takeIf { !it.isNullOrBlank() }
+            ?: "اشتراک لینک"
+
+        if (userInfoHeader.isNullOrBlank()) {
+            return SubscriptionStatus(
+                source = AccountSource.SUBSCRIPTION_URL,
+                title = rawTitle,
+                subscriptionUrl = url,
+                totalBytes = 0L,
+                expiryTimeMs = 0L,
+                enabled = true,
+                lastUpdatedMs = System.currentTimeMillis()
+            )
+        }
+
+        val map = mutableMapOf<String, Long>()
+        userInfoHeader.split(";").forEach { part ->
+            val kv = part.trim().split("=")
+            if (kv.size == 2) {
+                val key = kv[0].trim().lowercase()
+                val value = kv[1].trim().toLongOrNull()
+                if (value != null) {
+                    map[key] = value
+                }
+            }
+        }
+
+        val up = map["upload"] ?: 0L
+        val down = map["download"] ?: 0L
+        val total = map["total"] ?: 0L
+        val rawExpire = map["expire"] ?: 0L
+        val expireMs = when {
+            rawExpire <= 0L -> 0L
+            rawExpire < 100_000_000_000L -> rawExpire * 1000L // seconds -> ms
+            else -> rawExpire
+        }
+
+        return SubscriptionStatus(
+            source = AccountSource.SUBSCRIPTION_URL,
+            title = rawTitle,
+            subscriptionUrl = url,
+            uploadBytes = up,
+            downloadBytes = down,
+            totalBytes = total,
+            expiryTimeMs = expireMs,
+            enabled = true,
+            lastUpdatedMs = System.currentTimeMillis()
+        )
+    }
+
+    private fun decodeProfileTitle(header: String?): String? {
+        val trimmed = header?.trim()?.takeIf { it.isNotBlank() } ?: return null
+        return if (trimmed.startsWith("base64:", ignoreCase = true)) {
+            decodeBase64Flexible(trimmed.substringAfter(":"))?.takeIf { it.isNotBlank() } ?: trimmed
+        } else {
+            trimmed
         }
     }
 
@@ -616,6 +979,14 @@ object ProxyConfigParser {
     private fun decodeSafe(str: String): String {
         return try {
             URLDecoder.decode(str, "UTF-8")
+        } catch (e: Exception) {
+            str
+        }
+    }
+
+    private fun decodeFragmentSafe(str: String): String {
+        return try {
+            URLDecoder.decode(str.replace("+", "%2B"), "UTF-8")
         } catch (e: Exception) {
             str
         }

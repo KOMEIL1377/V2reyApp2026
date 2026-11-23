@@ -299,24 +299,8 @@ private fun StorePlanCard(
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.Bottom,
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.End
             ) {
-                Row(verticalAlignment = Alignment.Bottom) {
-                    Text(
-                        text = plan.priceTomans,
-                        color = Color.White,
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.ExtraBold
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "(${plan.priceUsd})",
-                        color = BndTextMuted,
-                        fontSize = 12.sp,
-                        modifier = Modifier.padding(bottom = 2.dp)
-                    )
-                }
-
                 Button(
                     onClick = onOrderClick,
                     colors = ButtonDefaults.buttonColors(

@@ -48,7 +48,9 @@ import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -66,7 +68,10 @@ import com.example.model.ConnectionMode
 import com.example.model.NetworkTrafficStats
 import com.example.model.ProxyNode
 import com.example.model.VpnState
+import com.example.ui.components.AccountLoginDialog
+import com.example.ui.components.AccountLoginPromptBanner
 import com.example.ui.components.BndTopHeaderBar
+import com.example.ui.components.SubscriptionStatusCard
 import com.example.ui.theme.BndBgDark
 import com.example.ui.theme.BndErrorRed
 import com.example.ui.theme.BndNeonPurple
@@ -108,6 +113,14 @@ fun DashboardScreen(
     val activeSocksPort by viewModel.activeSocksPort.collectAsState()
     val activeHttpPort by viewModel.activeHttpPort.collectAsState()
     val lastError by viewModel.lastError.collectAsState()
+    val activeSubStatus by viewModel.activeSubscriptionStatus.collectAsState()
+    val isRefreshingSub by viewModel.isRefreshingSubscription.collectAsState()
+    val isLoggedIn by viewModel.isLoggedIn.collectAsState()
+    val loggedInEmail by viewModel.loggedInEmail.collectAsState()
+    val isLoggingIn by viewModel.isLoggingIn.collectAsState()
+    val loginError by viewModel.loginError.collectAsState()
+
+    var showLoginDialog by remember { mutableStateOf(false) }
 
     val scrollState = rememberScrollState()
 
@@ -170,6 +183,31 @@ fun DashboardScreen(
                 .padding(horizontal = 20.dp, vertical = 6.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            // Hiddify-style Top Subscription Status / Refresh Card
+            if (activeSubStatus != null) {
+                SubscriptionStatusCard(
+                    status = activeSubStatus!!,
+                    isRefreshing = isRefreshingSub,
+                    refreshButtonLabel = "بروزرسانی لینک ساب / اشتراک",
+                    refreshTestTag = "dashboard_refresh_subscription_button",
+                    onRefresh = { viewModel.refreshSubscriptionAndServers(context) },
+                    onLoginClick = {
+                        viewModel.clearLoginError()
+                        showLoginDialog = true
+                    },
+                    isLoggedIn = isLoggedIn
+                )
+            } else {
+                AccountLoginPromptBanner(
+                    onLoginClick = {
+                        viewModel.clearLoginError()
+                        showLoginDialog = true
+                    }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
             // Selected Server Card / Empty state banner
             SelectedServerCard(
                 node = selectedNode,
@@ -237,6 +275,20 @@ fun DashboardScreen(
 
             Spacer(modifier = Modifier.height(28.dp))
         }
+    }
+
+    if (showLoginDialog) {
+        AccountLoginDialog(
+            initialEmail = loggedInEmail.orEmpty(),
+            isLoading = isLoggingIn,
+            errorMessage = loginError,
+            onDismiss = { showLoginDialog = false },
+            onLoginSubmit = { email, subId ->
+                viewModel.loginWithCredentials(email, subId) {
+                    showLoginDialog = false
+                }
+            }
+        )
     }
 }
 

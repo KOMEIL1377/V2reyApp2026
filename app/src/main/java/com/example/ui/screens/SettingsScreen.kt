@@ -25,12 +25,16 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.AltRoute
+import androidx.compose.material.icons.automirrored.filled.Login
+import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lan
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Security
@@ -70,7 +74,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.VpnRepository
 import com.example.model.ConnectionMode
+import com.example.ui.components.AccountLoginDialog
 import com.example.ui.components.BndTopHeaderBar
+import com.example.ui.components.formatJalaliDate
+import com.example.ui.components.formatTrafficQuota
 import com.example.ui.theme.BndBgDark
 import com.example.ui.theme.BndErrorRed
 import com.example.ui.theme.BndNeonPurple
@@ -101,10 +108,17 @@ fun SettingsScreen(
     val enableFakeDns by viewModel.enableFakeDns.collectAsState()
     val coreLogs by viewModel.coreLogs.collectAsState()
     val lastError by viewModel.lastError.collectAsState()
+    val isLoggedIn by viewModel.isLoggedIn.collectAsState()
+    val loggedInEmail by viewModel.loggedInEmail.collectAsState()
+    val panelStatus by viewModel.panelSubscriptionStatus.collectAsState()
+    val isRefreshingSub by viewModel.isRefreshingSubscription.collectAsState()
+    val isLoggingIn by viewModel.isLoggingIn.collectAsState()
+    val loginError by viewModel.loginError.collectAsState()
 
     var socksPortInput by remember(socksPort) { mutableStateOf(socksPort.toString()) }
     var httpPortInput by remember(httpPort) { mutableStateOf(httpPort.toString()) }
     var showLogsDialog by remember { mutableStateOf(false) }
+    var showLoginDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(socksPort, httpPort) {
         socksPortInput = socksPort.toString()
@@ -133,6 +147,89 @@ fun SettingsScreen(
             )
 
             Spacer(modifier = Modifier.height(14.dp))
+
+            // 0. Online BND Account (Login / Quota / Logout)
+            SettingsCard(title = "حساب کاربری اشتراک BND", icon = Icons.Default.AccountCircle) {
+                if (isLoggedIn) {
+                    val status = panelStatus
+                    val isBlocked = status?.isBlocked() == true
+                    val remainingText = when {
+                        status == null -> "—"
+                        status.isUnlimitedTraffic -> "نامحدود"
+                        else -> formatTrafficQuota(status.remainingBytes)
+                    }
+                    val expiryText = when {
+                        status == null -> "—"
+                        status.isUnlimitedTime -> "بدون محدودیت زمانی"
+                        else -> formatJalaliDate(status.expiryTimeMs)
+                    }
+
+                    InfoRow(label = "نام کاربری متصل:", value = loggedInEmail.orEmpty())
+                    InfoRow(
+                        label = "وضعیت اشتراک:",
+                        value = if (isBlocked) "منقضی شده" else "فعال • باقی‌مانده: $remainingText • انقضا: $expiryText"
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = { viewModel.refreshSubscriptionAndServers(context) },
+                            enabled = !isRefreshingSub,
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("settings_refresh_account_button"),
+                            colors = ButtonDefaults.buttonColors(containerColor = BndSurfaceVariantDark),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(Icons.Default.Refresh, contentDescription = null, tint = BndOrchidTertiary, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("بروزرسانی حساب", color = BndTextPrimary, fontSize = 12.sp)
+                        }
+
+                        Button(
+                            onClick = { viewModel.logout(context) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("logout_button"),
+                            colors = ButtonDefaults.buttonColors(containerColor = BndErrorRed.copy(alpha = 0.18f)),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null, tint = BndErrorRed, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("خروج از حساب", color = BndErrorRed, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                } else {
+                    Text(
+                        text = "برای همگام‌سازی خودکار سرورها، حجم باقی‌مانده و تاریخ انقضا با نام کاربری و Subscription ID وارد شوید. کانفیگ‌های دستی شما بدون نیاز به ورود هم همیشه فعال هستند.",
+                        color = BndTextMuted,
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Button(
+                        onClick = {
+                            viewModel.clearLoginError()
+                            showLoginDialog = true
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("open_login_button"),
+                        colors = ButtonDefaults.buttonColors(containerColor = BndVioletPrimary),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.Login, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("ورود به حساب کاربری BND", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
 
             // 1. Connection Mode Selector (VPN TUN vs Proxy Only)
             SettingsCard(title = "حالت اتصال (Connection Mode)", icon = Icons.Default.Lan) {
@@ -473,6 +570,20 @@ fun SettingsScreen(
             dismissButton = {
                 TextButton(onClick = { showLogsDialog = false }) {
                     Text("بستن", color = BndTextSecondary)
+                }
+            }
+        )
+    }
+
+    if (showLoginDialog) {
+        AccountLoginDialog(
+            initialEmail = loggedInEmail.orEmpty(),
+            isLoading = isLoggingIn,
+            errorMessage = loginError,
+            onDismiss = { showLoginDialog = false },
+            onLoginSubmit = { email, subId ->
+                viewModel.loginWithCredentials(email, subId) {
+                    showLoginDialog = false
                 }
             }
         )

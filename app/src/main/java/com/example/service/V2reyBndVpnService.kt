@@ -14,6 +14,7 @@ import android.os.Process
 import android.util.Base64
 import androidx.core.app.NotificationCompat
 import com.example.MainActivity
+import com.example.core.UniversalCoreConfigGenerator
 import com.example.data.VpnRepository
 import com.example.model.ConnectionMode
 import com.example.model.NetworkTrafficStats
@@ -265,6 +266,8 @@ class V2reyBndVpnService : VpnService() {
             try {
                 cleanupCoreResources()
 
+                val assets = UniversalCoreConfigGenerator.prepareAssetsDir(this@V2reyBndVpnService)
+
                 // 1. Write & verify config.json on disk before starting Xray-core
                 val configFile = if (providedConfigPath.isNotBlank()) {
                     File(providedConfigPath)
@@ -272,9 +275,19 @@ class V2reyBndVpnService : VpnService() {
                     File(filesDir, CONFIG_FILE_NAME)
                 }
 
-                if (configJson.isNotBlank()) {
+                val rawConfigText = when {
+                    configJson.isNotBlank() -> configJson
+                    configFile.exists() -> configFile.readText(Charsets.UTF_8)
+                    else -> ""
+                }
+                if (rawConfigText.isNotBlank()) {
+                    val sanitizedRuntimeJson = UniversalCoreConfigGenerator.sanitizeRuntimeGeodata(
+                        configJson = rawConfigText,
+                        hasGeosite = assets.hasGeosite,
+                        hasGeoip = assets.hasGeoip
+                    )
                     configFile.parentFile?.mkdirs()
-                    configFile.writeText(configJson, Charsets.UTF_8)
+                    configFile.writeText(sanitizedRuntimeJson, Charsets.UTF_8)
                 }
 
                 if (!configFile.exists() || configFile.length() <= 0L) {
@@ -283,8 +296,9 @@ class V2reyBndVpnService : VpnService() {
                     )
                 }
 
-                val datDir = File(filesDir, "xray_assets").apply { mkdirs() }.absolutePath
+                val datDir = assets.dir.absolutePath
                 appendLog("Initializing Xray (${queryXrayVersion()}) | Mode: ${mode.shortLabel} | Node: $nodeName ($protocol)")
+                appendLog("Xray assets dir: $datDir (geosite.dat=${assets.hasGeosite}, geoip.dat=${assets.hasGeoip})")
                 appendLog("Config file verified: ${configFile.absolutePath} (${configFile.length()} bytes)")
                 appendLog("Local Ports -> SOCKS5: 127.0.0.1:$socksPort | HTTP: 127.0.0.1:$httpPort | DNS: $dnsServer")
 

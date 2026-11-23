@@ -1,13 +1,206 @@
 package com.example.core
 
+import android.content.Context
+import android.system.Os
 import com.example.data.VpnRepository
 import com.example.model.ConnectionMode
 import com.example.model.ProxyNode
 import com.example.model.ProxyProtocol
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 
 object UniversalCoreConfigGenerator {
+
+    data class XrayAssetAvailability(
+        val dir: File,
+        val hasGeosite: Boolean,
+        val hasGeoip: Boolean
+    )
+
+    fun prepareAssetsDir(context: Context): XrayAssetAvailability {
+        val dir = File(context.filesDir, "xray_assets").apply { mkdirs() }
+        copyAssetIfBundled(context, "geosite.dat", File(dir, "geosite.dat"))
+        copyAssetIfBundled(context, "geoip.dat", File(dir, "geoip.dat"))
+        try {
+            Os.setenv("XRAY_LOCATION_ASSET", dir.absolutePath, true)
+        } catch (_: Throwable) {
+        }
+        val hasGeosite = File(dir, "geosite.dat").let { it.exists() && it.length() > 0L }
+        val hasGeoip = File(dir, "geoip.dat").let { it.exists() && it.length() > 0L }
+        return XrayAssetAvailability(dir = dir, hasGeosite = hasGeosite, hasGeoip = hasGeoip)
+    }
+
+    private fun copyAssetIfBundled(context: Context, assetName: String, target: File) {
+        if (target.exists() && target.length() > 0L) return
+        try {
+            context.assets.open(assetName).use { input ->
+                target.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            }
+        } catch (_: Exception) {
+            // Bundled asset is optional; missing .dat files are handled gracefully at runtime
+        }
+    }
+
+    /**
+     * Sanitizes ONLY the temporary runtime JSON when geosite.dat or geoip.dat is missing from
+     * xray_assets, leaving the stored user config (ProxyNode.rawXrayJson) completely untouched.
+     */
+    fun sanitizeRuntimeGeodata(
+        configJson: String,
+        hasGeosite: Boolean,
+        hasGeoip: Boolean
+    ): String {
+        if (hasGeosite && hasGeoip) return configJson
+        return try {
+            val root = JSONObject(configJson)
+
+            // 1. Clean routing.rules domain/ip arrays
+            val routing = root.optJSONObject("routing")
+            val rules = routing?.optJSONArray("rules")
+            if (rules != null) {
+                val cleanedRules = JSONArray()
+                for (i in 0 until rules.length()) {
+                    val rule = rules.optJSONObject(i) ?: continue
+                    var dropRule = false
+
+                    if (!hasGeosite && rule.has("domain")) {
+                        val domainArr = rule.optJSONArray("domain")
+                        if (domainArr != null) {
+                            val kept = JSONArray()
+                            var removedAny = false
+                            for (j in 0 until domainArr.length()) {
+                                val entry = domainArr.optString(j)
+                                if (isUnsupportedGeositeEntry(entry)) {
+                                    removedAny = true
+                                } else {
+                                    kept.put(entry)
+                                }
+                            }
+                            if (removedAny) {
+                                if (kept.length() > 0) {
+                                    rule.put("domain", kept)
+                                } else {
+                                    dropRule = true
+                                }
+                            }
+                        }
+                    }
+
+                    if (!dropRule && !hasGeoip && rule.has("ip")) {
+                        val ipArr = rule.optJSONArray("ip")
+                        if (ipArr != null) {
+                            val kept = JSONArray()
+                            var removedAny = false
+                            for (j in 0 until ipArr.length()) {
+                                val entry = ipArr.optString(j)
+                                if (isUnsupportedGeoipEntry(entry)) {
+                                    removedAny = true
+                                } else {
+                                    kept.put(entry)
+                                }
+                            }
+                            if (removedAny) {
+                                if (kept.length() > 0) {
+                                    rule.put("ip", kept)
+                                } else {
+                                    dropRule = true
+                                }
+                            }
+                        }
+                    }
+
+                    if (!dropRule) {
+                        cleanedRules.put(rule)
+                    }
+                }
+                routing.put("rules", cleanedRules)
+            }
+
+            // 2. Clean dns.servers[*].domains (and expectIPs) if custom JSON references geosite/geoip
+            val dns = root.optJSONObject("dns")
+            val servers = dns?.optJSONArray("servers")
+            if (servers != null) {
+                val candidates = mutableListOf<Pair<Any, Boolean>>()
+                for (i in 0 until servers.length()) {
+                    val item = servers.get(i)
+                    if (item is JSONObject) {
+                        var domainBecameEmpty = false
+                        if (!hasGeosite && item.has("domains")) {
+                            val domainsArr = item.optJSONArray("domains")
+                            if (domainsArr != null) {
+                                val kept = JSONArray()
+                                var removedAny = false
+                                for (j in 0 until domainsArr.length()) {
+                                    val entry = domainsArr.optString(j)
+                                    if (isUnsupportedGeositeEntry(entry)) {
+                                        removedAny = true
+                                    } else {
+                                        kept.put(entry)
+                                    }
+                                }
+                                if (removedAny) {
+                                    if (kept.length() > 0) {
+                                        item.put("domains", kept)
+                                    } else {
+                                        item.remove("domains")
+                                        domainBecameEmpty = true
+                                    }
+                                }
+                            }
+                        }
+                        if (!hasGeoip && item.has("expectIPs")) {
+                            val expArr = item.optJSONArray("expectIPs")
+                            if (expArr != null) {
+                                val kept = JSONArray()
+                                var removedAny = false
+                                for (j in 0 until expArr.length()) {
+                                    val entry = expArr.optString(j)
+                                    if (isUnsupportedGeoipEntry(entry)) {
+                                        removedAny = true
+                                    } else {
+                                        kept.put(entry)
+                                    }
+                                }
+                                if (removedAny) {
+                                    if (kept.length() > 0) item.put("expectIPs", kept) else item.remove("expectIPs")
+                                }
+                            }
+                        }
+                        candidates.add(item to domainBecameEmpty)
+                    } else {
+                        candidates.add(item to false)
+                    }
+                }
+                val hasUnconditionalServer = candidates.any { !it.second }
+                val finalServers = JSONArray()
+                candidates.forEach { (srv, domainBecameEmpty) ->
+                    if (!domainBecameEmpty || !hasUnconditionalServer) {
+                        finalServers.put(srv)
+                    }
+                }
+                dns.put("servers", finalServers)
+            }
+
+            root.toString(2)
+        } catch (_: Exception) {
+            configJson
+        }
+    }
+
+    private fun isUnsupportedGeositeEntry(entry: String): Boolean {
+        val trimmed = entry.trim()
+        return trimmed.startsWith("geosite:", ignoreCase = true) ||
+            trimmed.startsWith("ext:geosite", ignoreCase = true)
+    }
+
+    private fun isUnsupportedGeoipEntry(entry: String): Boolean {
+        val trimmed = entry.trim()
+        return trimmed.startsWith("geoip:", ignoreCase = true) ||
+            trimmed.startsWith("ext:geoip", ignoreCase = true)
+    }
 
     private val IRAN_DOMAINS = listOf(
         "domain:ir",
@@ -58,6 +251,19 @@ object UniversalCoreConfigGenerator {
         enableTlsFragment: Boolean = false,
         enableFakeDns: Boolean = false
     ): String {
+        if (node.protocol == ProxyProtocol.CUSTOM_JSON && !node.rawXrayJson.isNullOrBlank()) {
+            return generateFromCustomXrayJson(
+                rawJson = node.rawXrayJson,
+                node = node,
+                connectionMode = connectionMode,
+                socksPort = socksPort,
+                httpPort = httpPort,
+                bypassIran = bypassIran,
+                dnsServer = dnsServer,
+                enableFakeDns = enableFakeDns
+            )
+        }
+
         val root = JSONObject()
 
         root.put("log", JSONObject().apply {
@@ -172,6 +378,139 @@ object UniversalCoreConfigGenerator {
 
         // Routing rules
         root.put("routing", buildRoutingConfig(node, connectionMode, bypassIran))
+
+        return root.toString(2)
+    }
+
+    private fun generateFromCustomXrayJson(
+        rawJson: String,
+        node: ProxyNode,
+        connectionMode: ConnectionMode,
+        socksPort: Int,
+        httpPort: Int,
+        bypassIran: Boolean,
+        dnsServer: String,
+        enableFakeDns: Boolean
+    ): String {
+        val root = JSONObject(rawJson)
+
+        if (!root.has("log")) {
+            root.put("log", JSONObject().apply {
+                put("loglevel", "warning")
+            })
+        }
+
+        if (enableFakeDns && !root.has("fakedns")) {
+            root.put("fakedns", JSONArray().apply {
+                put(JSONObject().apply {
+                    put("ipPool", "198.18.0.0/15")
+                })
+            })
+        }
+
+        if (!root.has("dns")) {
+            root.put("dns", buildDnsConfig(node, dnsServer, bypassIran, enableFakeDns))
+        }
+
+        val sniffingDestOverride = JSONArray().apply {
+            put("http")
+            put("tls")
+            put("quic")
+            if (enableFakeDns) put("fakedns")
+        }
+        val sniffingConfig = JSONObject().apply {
+            put("enabled", enableFakeDns || connectionMode == ConnectionMode.VPN)
+            put("destOverride", sniffingDestOverride)
+            put("routeOnly", false)
+        }
+
+        // Replace local/TUN inbounds so Android VPN TUN and active SOCKS/HTTP ports are always bound
+        val inbounds = JSONArray().apply {
+            if (connectionMode == ConnectionMode.VPN) {
+                put(JSONObject().apply {
+                    put("tag", "tun-in")
+                    put("protocol", "tun")
+                    put("settings", JSONObject().apply {
+                        put("name", "tun0")
+                        put("mtu", 1500)
+                        put("gateway", JSONArray().put("172.19.0.1/30"))
+                        put("userLevel", 0)
+                    })
+                    put("sniffing", sniffingConfig)
+                })
+            }
+            put(JSONObject().apply {
+                put("tag", "socks-in")
+                put("listen", "127.0.0.1")
+                put("port", socksPort)
+                put("protocol", "socks")
+                put("settings", JSONObject().apply {
+                    put("auth", "noauth")
+                    put("udp", true)
+                })
+                put("sniffing", sniffingConfig)
+            })
+            put(JSONObject().apply {
+                put("tag", "http-in")
+                put("listen", "127.0.0.1")
+                put("port", httpPort)
+                put("protocol", "http")
+                put("sniffing", sniffingConfig)
+            })
+        }
+        root.put("inbounds", inbounds)
+
+        // Ensure dns-out / direct outbounds exist when VPN TUN mode intercepts port 53
+        val outbounds = root.optJSONArray("outbounds") ?: JSONArray()
+        var hasDnsOut = false
+        var hasDirect = false
+        for (i in 0 until outbounds.length()) {
+            val tag = outbounds.optJSONObject(i)?.optString("tag")
+            if (tag == "dns-out") hasDnsOut = true
+            if (tag == "direct") hasDirect = true
+        }
+        if (!hasDirect) {
+            outbounds.put(JSONObject().apply {
+                put("tag", "direct")
+                put("protocol", "freedom")
+                put("settings", JSONObject().apply {
+                    put("domainStrategy", "UseIPv4")
+                })
+            })
+        }
+        if (!hasDnsOut) {
+            outbounds.put(JSONObject().apply {
+                put("tag", "dns-out")
+                put("protocol", "dns")
+            })
+        }
+        root.put("outbounds", outbounds)
+
+        if (connectionMode == ConnectionMode.VPN) {
+            val routing = root.optJSONObject("routing") ?: JSONObject().apply {
+                put("domainStrategy", "IPIfNonMatch")
+            }
+            val existingRules = routing.optJSONArray("rules") ?: JSONArray()
+            val mergedRules = JSONArray().apply {
+                put(JSONObject().apply {
+                    put("type", "field")
+                    put("inboundTag", JSONArray().put("tun-in"))
+                    put("port", "53")
+                    put("outboundTag", "dns-out")
+                })
+                for (i in 0 until existingRules.length()) {
+                    put(existingRules.get(i))
+                }
+            }
+            routing.put("rules", mergedRules)
+            root.put("routing", routing)
+        }
+
+        // Remove non-standard top-level metadata fields like remark/remarks that Xray might reject
+        root.remove("remarks")
+        root.remove("remark")
+        root.remove("name")
+        root.remove("ps")
 
         return root.toString(2)
     }
@@ -465,6 +804,10 @@ object UniversalCoreConfigGenerator {
                         })
                     }
                 })
+            }
+
+            ProxyProtocol.CUSTOM_JSON -> {
+                // Handled directly via generateFromCustomXrayJson
             }
         }
 

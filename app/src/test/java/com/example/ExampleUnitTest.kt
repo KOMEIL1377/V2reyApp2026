@@ -176,4 +176,457 @@ class ExampleUnitTest {
     assertEquals(expectedFile.absolutePath, startedIntent.getStringExtra(V2reyBndVpnService.EXTRA_CONFIG_PATH))
     assertEquals(ConnectionMode.PROXY.name, startedIntent.getStringExtra(V2reyBndVpnService.EXTRA_CONNECTION_MODE))
   }
+
+  @Test
+  fun verify_xray_json_import_validation_and_execution() {
+    val validXrayJson = """
+      {
+        "remarks": "Custom VLESS JSON",
+        "outbounds": [
+          {
+            "tag": "proxy",
+            "protocol": "vless",
+            "settings": {
+              "vnext": [
+                {
+                  "address": "custom.v2reybnd.vip",
+                  "port": 443,
+                  "users": [{ "id": "b82b9920-a615-4cf5-b1a9-980b18fa9182", "encryption": "none" }]
+                }
+              ]
+            },
+            "streamSettings": {
+              "network": "ws",
+              "security": "tls"
+            }
+          }
+        ]
+      }
+    """.trimIndent()
+
+    val validRes = ProxyConfigParser.parseBulkTextWithValidation(validXrayJson)
+    assertNull(validRes.errorMessage)
+    assertEquals(1, validRes.nodes.size)
+    val jsonNode = validRes.nodes.first()
+    assertEquals(ProxyProtocol.CUSTOM_JSON, jsonNode.protocol)
+    assertEquals("Custom VLESS JSON", jsonNode.name)
+    assertEquals("custom.v2reybnd.vip", jsonNode.server)
+
+    val generatedVpn = JSONObject(
+      UniversalCoreConfigGenerator.generateXrayConfig(
+        node = jsonNode,
+        connectionMode = ConnectionMode.VPN,
+        socksPort = 11808,
+        httpPort = 11809
+      )
+    )
+    assertFalse(generatedVpn.has("remarks"))
+    val inbounds = generatedVpn.getJSONArray("inbounds")
+    assertEquals("tun", inbounds.getJSONObject(0).getString("protocol"))
+    assertEquals(11808, inbounds.getJSONObject(1).getInt("port"))
+    assertEquals(11809, inbounds.getJSONObject(2).getInt("port"))
+
+    val invalidRes = ProxyConfigParser.parseBulkTextWithValidation("""{"foo":"bar"}""")
+    assertTrue(invalidRes.nodes.isEmpty())
+    assertNotNull(invalidRes.errorMessage)
+  }
+
+  @Test
+  fun verify_sanaei_panel_auth_quota_expiry_and_errors() {
+    val samplePanelJson = """
+      {
+        "success": true,
+        "msg": "",
+        "obj": [
+          {
+            "id": 1,
+            "enable": true,
+            "remark": "Germany_Reality",
+            "port": 443,
+            "protocol": "vless",
+            "settings": "{\"clients\":[{\"id\":\"11111111-1111-1111-1111-111111111111\",\"email\":\"Kamibnd1\",\"subId\":\"subSecret99\",\"enable\":true,\"totalGB\":53687091200,\"expiryTime\":4102444800000,\"flow\":\"xtls-rprx-vision\"},{\"id\":\"22222222-2222-2222-2222-222222222222\",\"email\":\"DisabledUser\",\"subId\":\"subDisabled\",\"enable\":false,\"totalGB\":0,\"expiryTime\":0}]}",
+            "streamSettings": "{\"network\":\"tcp\",\"security\":\"reality\",\"realitySettings\":{\"serverNames\":[\"yahoo.com\"],\"shortIds\":[\"ab\"],\"settings\":{\"publicKey\":\"pub123\",\"fingerprint\":\"chrome\"}}}",
+            "clientStats": [
+              {
+                "id": 10,
+                "inboundId": 1,
+                "enable": true,
+                "email": "Kamibnd1",
+                "up": 1073741824,
+                "down": 2147483648,
+                "total": 53687091200,
+                "expiryTime": 4102444800000
+              },
+              {
+                "id": 11,
+                "inboundId": 1,
+                "enable": false,
+                "email": "DisabledUser",
+                "up": 0,
+                "down": 0,
+                "total": 0,
+                "expiryTime": 0
+              }
+            ]
+          }
+        ]
+      }
+    """.trimIndent()
+
+    val client = com.example.network.SanaeiPanelClient(
+      baseUrl = "https://test.kami2.ir:2087/g956c0SiBSMcFjogcR",
+      apiToken = "testToken"
+    )
+
+    // 1. Success match by email + subId
+    val ok = client.parseInboundsListResponse(
+      responseJson = samplePanelJson,
+      panelBaseUrl = "https://test.kami2.ir:2087/g956c0SiBSMcFjogcR",
+      inputEmail = "Kamibnd1",
+      inputSubId = "subSecret99",
+      rejectIfDisabled = true
+    )
+    assertTrue(ok is com.example.network.PanelSyncResult.Success)
+    val success = ok as com.example.network.PanelSyncResult.Success
+    assertEquals("Kamibnd1", success.status.email)
+    assertEquals(3221225472L, success.status.usedBytes)
+    assertEquals(53687091200L - 3221225472L, success.status.remainingBytes)
+    assertFalse(success.status.isBlocked(1700000000000L))
+    assertEquals(1, success.nodes.size)
+    assertEquals(com.example.model.NodeOrigin.PANEL_ACCOUNT, success.nodes.first().origin)
+    assertEquals("test.kami2.ir", success.nodes.first().server)
+
+    // 2. Wrong subId
+    val wrongPass = client.parseInboundsListResponse(
+      samplePanelJson, "https://test.kami2.ir:2087/x", "Kamibnd1", "wrongSubId", true
+    )
+    assertTrue(wrongPass is com.example.network.PanelSyncResult.Error)
+    assertTrue((wrongPass as com.example.network.PanelSyncResult.Error).isAuthError)
+
+    // 3. Unknown user
+    val unknownUser = client.parseInboundsListResponse(
+      samplePanelJson, "https://test.kami2.ir:2087/x", "NoSuchUser", "subSecret99", true
+    )
+    assertTrue(unknownUser is com.example.network.PanelSyncResult.Error)
+    assertTrue((unknownUser as com.example.network.PanelSyncResult.Error).isAuthError)
+
+    // 4. Disabled user on login
+    val disabledUser = client.parseInboundsListResponse(
+      samplePanelJson, "https://test.kami2.ir:2087/x", "DisabledUser", "subDisabled", true
+    )
+    assertTrue(disabledUser is com.example.network.PanelSyncResult.Error)
+    assertTrue((disabledUser as com.example.network.PanelSyncResult.Error).isDisabled)
+  }
+
+  @Test
+  fun verify_exhausted_or_expired_blocks_connection_and_logout_keeps_manual_nodes() {
+    val app = ApplicationProvider.getApplicationContext<Application>()
+    val context: Context = app
+    val repository = VpnRepository(context)
+    val viewModel = MainViewModel(repository)
+
+    // Add manual node
+    val manualNode = ProxyConfigParser.parseLine(
+      "vless://b82b9920-a615-4cf5-b1a9-980b18fa9182@manual.example.com:443?type=tcp&security=tls#ManualNode"
+    )!!
+    repository.addNode(manualNode)
+
+    // Save exhausted panel account node
+    val panelNode = ProxyConfigParser.parseLine(
+      "vless://11111111-1111-1111-1111-111111111111@panel.example.com:443?type=tcp&security=tls#PanelNode"
+    )!!.copy(origin = com.example.model.NodeOrigin.PANEL_ACCOUNT)
+    val exhaustedStatus = com.example.model.SubscriptionStatus(
+      source = com.example.model.AccountSource.PANEL_LOGIN,
+      title = "Kamibnd1",
+      email = "Kamibnd1",
+      subId = "sub1",
+      uploadBytes = 5_000_000_000L,
+      downloadBytes = 6_000_000_000L,
+      totalBytes = 10_000_000_000L,
+      expiryTimeMs = 0L,
+      enabled = true
+    )
+    repository.savePanelSession("Kamibnd1", "sub1", exhaustedStatus, listOf(panelNode))
+    repository.selectNode(panelNode)
+    viewModel.setConnectionMode(ConnectionMode.PROXY)
+
+    // Exhausted quota must block starting VPN/Xray
+    viewModel.toggleConnection(context) {}
+    assertNull(Shadows.shadowOf(app).nextStartedService)
+    assertTrue(V2reyBndVpnService.lastError.value?.contains("منقضی شده") == true)
+
+    // Unlimited traffic (total == 0) + unlimited expiry (expiryTime <= 0) must NOT be blocked
+    val unlimitedStatus = com.example.model.SubscriptionStatus(
+      source = com.example.model.AccountSource.PANEL_LOGIN,
+      title = "UnlimitedUser",
+      uploadBytes = 999_999_999L,
+      downloadBytes = 999_999_999L,
+      totalBytes = 0L,
+      expiryTimeMs = 0L,
+      enabled = true
+    )
+    assertTrue(unlimitedStatus.isUnlimitedTraffic)
+    assertTrue(unlimitedStatus.isUnlimitedTime)
+    assertFalse(unlimitedStatus.isBlocked())
+
+    // Logout removes only PANEL_ACCOUNT nodes and keeps MANUAL node intact
+    viewModel.logout(context)
+    assertFalse(viewModel.isLoggedIn.value)
+    assertEquals(1, viewModel.nodes.value.size)
+    assertEquals("ManualNode", viewModel.nodes.value.first().name)
+    assertEquals(com.example.model.NodeOrigin.MANUAL, viewModel.nodes.value.first().origin)
+  }
+
+  @Test
+  fun verify_panel_sub_url_discovery_and_lossless_variants() {
+    val client = com.example.network.SanaeiPanelClient(
+      baseUrl = "https://panel.example.com:2087/secret",
+      apiToken = "tok"
+    )
+    val panelSettings = JSONObject(
+      """
+      {
+        "subURI": "https://sub.example.com:2095/sub",
+        "subPort": 2095,
+        "subDomain": "alt.example.com",
+        "subPath": "/customsub/"
+      }
+      """.trimIndent()
+    )
+    val candidates = client.buildCandidateSubUrlsFromPanelSettings(
+      panelBaseUrl = "https://panel.example.com:2087/secret",
+      subId = "subToken1",
+      panelSettingsObj = panelSettings
+    )
+    assertTrue(candidates.first() == "https://sub.example.com:2095/sub/subToken1")
+    assertTrue(candidates.any { it.contains("alt.example.com:2095/customsub/subToken1") })
+
+    // Verify lossless bulk subscription import keeps exact port 2095, literal '+' in remark, empty SNI for non-TLS,
+    // and distinct IP/domain variants on the same port without collapsing them.
+    val bulkSubPayload = listOf(
+      "vless://11111111-1111-1111-1111-111111111111@1.1.1.1:2095?type=tcp&security=none#BND+IR+1",
+      "vless://11111111-1111-1111-1111-111111111111@2.2.2.2:2095?type=tcp&security=none#BND+IR+2",
+      "vless://11111111-1111-1111-1111-111111111111@cdn.example.com:2095?type=ws&host=cdn.example.com&path=%2Fws&security=tls&sni=cdn.example.com#BND+CDN"
+    ).joinToString("\n")
+
+    val parsed = ProxyConfigParser.parseBulkTextWithValidation(
+      bulkSubPayload,
+      com.example.model.NodeOrigin.PANEL_ACCOUNT
+    )
+    assertNull(parsed.errorMessage)
+    assertEquals(3, parsed.nodes.size)
+    assertEquals(listOf(2095, 2095, 2095), parsed.nodes.map { it.port })
+    assertEquals(listOf("1.1.1.1", "2.2.2.2", "cdn.example.com"), parsed.nodes.map { it.server })
+    assertEquals("BND+IR+1", parsed.nodes[0].name)
+    assertEquals("", parsed.nodes[0].sni)
+    assertEquals("cdn.example.com", parsed.nodes[2].sni)
+  }
+
+  @Test
+  fun verify_unlimited_subscriptions_switching_and_unconditional_delete() {
+    val app = ApplicationProvider.getApplicationContext<Application>()
+    val context: Context = app
+    val repository = VpnRepository(context)
+    val viewModel = MainViewModel(repository)
+
+    // Manual config must remain untouched across all subscription operations
+    val manual = ProxyConfigParser.parseLine(
+      "vless://aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa@manual.host.vip:443?type=tcp&security=tls#ManualKeep"
+    )!!
+    repository.addNode(manual)
+
+    // Add 3 separate unlimited subscriptions
+    val n1 = ProxyConfigParser.parseLine(
+      "vless://11111111-1111-1111-1111-111111111111@s1.example.com:443?security=tls#Sub1_Node"
+    )!!
+    val sub1 = repository.upsertManualSubscription(
+      url = "https://sub1.example.com/sub/a",
+      status = com.example.model.SubscriptionStatus(
+        source = com.example.model.AccountSource.SUBSCRIPTION_URL,
+        title = "Sub 1",
+        totalBytes = 10_000_000_000L
+      ),
+      syncedNodes = listOf(n1),
+      makeActive = true
+    )
+
+    val n2 = ProxyConfigParser.parseLine(
+      "vless://22222222-2222-2222-2222-222222222222@s2.example.com:443?security=tls#Sub2_Node"
+    )!!
+    val sub2 = repository.upsertManualSubscription(
+      url = "https://sub2.example.com/sub/b",
+      status = com.example.model.SubscriptionStatus(
+        source = com.example.model.AccountSource.SUBSCRIPTION_URL,
+        title = "Sub 2 Expired",
+        uploadBytes = 8_000_000_000L,
+        downloadBytes = 3_000_000_000L,
+        totalBytes = 10_000_000_000L,
+        expiryTimeMs = 1000L,
+        enabled = false
+      ),
+      syncedNodes = listOf(n2),
+      makeActive = false
+    )
+
+    val n3 = ProxyConfigParser.parseLine(
+      "vless://33333333-3333-3333-3333-333333333333@s3.example.com:2095?security=none#Sub3_Node"
+    )!!
+    val sub3 = repository.upsertManualSubscription(
+      url = "https://sub3.example.com/sub/c",
+      status = com.example.model.SubscriptionStatus(
+        source = com.example.model.AccountSource.SUBSCRIPTION_URL,
+        title = "Sub 3"
+      ),
+      syncedNodes = listOf(n3),
+      makeActive = false
+    )
+
+    assertEquals(3, viewModel.subscriptions.value.size)
+    assertEquals(4, viewModel.nodes.value.size)
+
+    // Switch active subscription to sub2 and verify activeSubscriptionStatus + selectedNode update
+    viewModel.selectSubscription(sub2.id)
+    assertEquals(sub2.id, viewModel.activeSubscriptionStatus.value?.id)
+    assertEquals("Sub2_Node", viewModel.selectedNode.value?.name)
+    assertTrue(viewModel.activeSubscriptionStatus.value?.isBlocked() == true)
+
+    // Unconditionally delete exhausted/expired/disabled sub2
+    viewModel.deleteSubscription(context, sub2.id)
+    assertEquals(2, viewModel.subscriptions.value.size)
+    assertFalse(viewModel.subscriptions.value.any { it.id == sub2.id })
+    assertEquals(3, viewModel.nodes.value.size)
+    assertFalse(viewModel.nodes.value.any { it.name == "Sub2_Node" })
+    assertTrue(viewModel.nodes.value.any { it.name == "ManualKeep" })
+    assertTrue(viewModel.nodes.value.any { it.name == "Sub1_Node" })
+    assertTrue(viewModel.nodes.value.any { it.name == "Sub3_Node" })
+    assertTrue(viewModel.subscriptions.value.any { it.id == sub1.id })
+    assertTrue(viewModel.subscriptions.value.any { it.id == sub3.id })
+  }
+
+  @Test
+  fun verify_qr_payload_classification_and_import() {
+    val app = ApplicationProvider.getApplicationContext<Application>()
+    val context: Context = app
+    val repository = VpnRepository(context)
+    val viewModel = MainViewModel(repository)
+
+    // 1. Subscription URL (including custom port 2096)
+    val subClass = ProxyConfigParser.classifyQrPayload("https://sub.example.com:2096/sub/abc123")
+    assertEquals(ProxyConfigParser.QrImportType.SUBSCRIPTION_URL, subClass.type)
+
+    // 2. Single VLESS URI -> CONFIG
+    val uriClass = ProxyConfigParser.classifyQrPayload(
+      "vless://b82b9920-a615-4cf5-b1a9-980b18fa9182@de.v2reybnd.vip:2095?type=tcp&security=none#QR_VLESS"
+    )
+    assertEquals(ProxyConfigParser.QrImportType.CONFIG, uriClass.type)
+    assertEquals(1, uriClass.nodes.size)
+
+    val importedType = viewModel.importScannedQrContent(
+      "vless://b82b9920-a615-4cf5-b1a9-980b18fa9182@de.v2reybnd.vip:2095?type=tcp&security=none#QR_VLESS"
+    )
+    assertEquals(ProxyConfigParser.QrImportType.CONFIG, importedType)
+    assertTrue(viewModel.nodes.value.any { it.name == "QR_VLESS" && it.port == 2095 })
+
+    // 3. Invalid payload -> INVALID
+    val invalidType = viewModel.importScannedQrContent("not-a-valid-qr-config-or-url")
+    assertEquals(ProxyConfigParser.QrImportType.INVALID, invalidType)
+  }
+
+  @Test
+  fun verify_runtime_geodata_sanitization_preserves_saved_json() {
+    val app = ApplicationProvider.getApplicationContext<Application>()
+    val assets = UniversalCoreConfigGenerator.prepareAssetsDir(app)
+    assertTrue(assets.dir.exists())
+    assertEquals("xray_assets", assets.dir.name)
+
+    val rawCustomJson = """
+      {
+        "remarks": "GeoJsonNode",
+        "dns": {
+          "servers": [
+            "1.1.1.1",
+            {
+              "address": "223.5.5.5",
+              "domains": ["geosite:ir", "domain:ir"],
+              "expectIPs": ["geoip:ir"]
+            },
+            {
+              "address": "8.8.8.8",
+              "domains": ["geosite:cn"]
+            }
+          ]
+        },
+        "outbounds": [
+          {
+            "tag": "proxy",
+            "protocol": "vless",
+            "settings": {
+              "vnext": [
+                {
+                  "address": "geo.example.com",
+                  "port": 443,
+                  "users": [{ "id": "b82b9920-a615-4cf5-b1a9-980b18fa9182", "encryption": "none" }]
+                }
+              ]
+            }
+          }
+        ],
+        "routing": {
+          "rules": [
+            { "type": "field", "domain": ["geosite:category-ads-all"], "outboundTag": "block" },
+            { "type": "field", "ip": ["geoip:ir", "geoip:private"], "outboundTag": "direct" },
+            { "type": "field", "domain": ["geosite:ir", "domain:ir"], "outboundTag": "direct" },
+            { "type": "field", "network": "tcp,udp", "outboundTag": "proxy" }
+          ]
+        }
+      }
+    """.trimIndent()
+
+    val parseRes = ProxyConfigParser.parseBulkTextWithValidation(rawCustomJson)
+    assertEquals(1, parseRes.nodes.size)
+    val savedNode = parseRes.nodes.first()
+    val originalSavedJson = savedNode.rawXrayJson!!
+    assertTrue(originalSavedJson.contains("geosite:category-ads-all"))
+
+    val runtimeConfig = UniversalCoreConfigGenerator.generateXrayConfig(
+      node = savedNode,
+      connectionMode = ConnectionMode.VPN,
+      socksPort = 10808,
+      httpPort = 10809
+    )
+    val sanitized = UniversalCoreConfigGenerator.sanitizeRuntimeGeodata(
+      configJson = runtimeConfig,
+      hasGeosite = false,
+      hasGeoip = false
+    )
+
+    // Saved config remains untouched
+    assertTrue(savedNode.rawXrayJson!!.contains("geosite:category-ads-all"))
+    assertTrue(savedNode.rawXrayJson!!.contains("geoip:ir"))
+
+    val root = JSONObject(sanitized)
+    val rules = root.getJSONObject("routing").getJSONArray("rules")
+    // Expected kept rules: tun DNS port 53, mixed ["domain:ir"], catch-all tcp,udp
+    val outboundTags = (0 until rules.length()).map { rules.getJSONObject(it).getString("outboundTag") }
+    assertFalse(outboundTags.contains("block"))
+    assertTrue(outboundTags.contains("dns-out"))
+    assertTrue(outboundTags.contains("direct"))
+    assertTrue(outboundTags.contains("proxy"))
+
+    val directRule = (0 until rules.length())
+      .map { rules.getJSONObject(it) }
+      .first { it.optString("outboundTag") == "direct" }
+    val directDomains = directRule.getJSONArray("domain")
+    assertEquals(1, directDomains.length())
+    assertEquals("domain:ir", directDomains.getString(0))
+
+    val dnsServers = root.getJSONObject("dns").getJSONArray("servers")
+    // Server 8.8.8.8 had only geosite:cn so it's dropped; 223.5.5.5 keeps domain:ir without expectIPs
+    assertEquals(2, dnsServers.length())
+    val domesticDns = dnsServers.getJSONObject(1)
+    assertEquals("223.5.5.5", domesticDns.getString("address"))
+    assertEquals("domain:ir", domesticDns.getJSONArray("domains").getString(0))
+    assertFalse(domesticDns.has("expectIPs"))
+  }
 }
+

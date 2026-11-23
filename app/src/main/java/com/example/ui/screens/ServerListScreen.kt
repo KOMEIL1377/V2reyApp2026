@@ -1,9 +1,14 @@
 package com.example.ui.screens
 
+import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.pm.PackageManager
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -33,11 +38,13 @@ import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -76,7 +83,14 @@ import androidx.compose.ui.unit.sp
 import com.example.data.BndTelegramLinks
 import com.example.model.ProxyNode
 import com.example.model.ProxyProtocol
+import com.example.model.SubscriptionStatus
+import com.example.ui.components.AccountLoginDialog
+import com.example.ui.components.AccountLoginPromptBanner
 import com.example.ui.components.BndTopHeaderBar
+import com.example.ui.components.DeleteSubscriptionConfirmDialog
+import com.example.ui.components.QrScannerDialog
+import com.example.ui.components.SubscriptionStatusCard
+import com.example.ui.components.SubscriptionSwitcherRow
 import com.example.ui.theme.BndBgDark
 import com.example.ui.theme.BndErrorRed
 import com.example.ui.theme.BndNeonPurple
@@ -103,10 +117,49 @@ fun ServerListScreen(
     val selectedNode by viewModel.selectedNode.collectAsState()
     val isTestingAll by viewModel.isTestingAllPings.collectAsState()
     val savedSubUrl by viewModel.subscriptionUrl.collectAsState()
+    val subscriptions by viewModel.subscriptions.collectAsState()
+    val activeSubId by viewModel.activeSubscriptionId.collectAsState()
+    val activeSubStatus by viewModel.activeSubscriptionStatus.collectAsState()
+    val isRefreshingSub by viewModel.isRefreshingSubscription.collectAsState()
+    val isLoggedIn by viewModel.isLoggedIn.collectAsState()
+    val loggedInEmail by viewModel.loggedInEmail.collectAsState()
+    val isLoggingIn by viewModel.isLoggingIn.collectAsState()
+    val loginError by viewModel.loginError.collectAsState()
 
     var searchQuery by remember { mutableStateOf("") }
     var selectedProtocolFilter by remember { mutableStateOf<ProxyProtocol?>(null) }
     var showImportDialog by remember { mutableStateOf(false) }
+    var showLoginDialog by remember { mutableStateOf(false) }
+    var showQrScanner by remember { mutableStateOf(false) }
+    var subscriptionToDelete by remember { mutableStateOf<SubscriptionStatus?>(null) }
+
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            showImportDialog = false
+            showQrScanner = true
+        } else {
+            Toast.makeText(
+                context,
+                "برای اسکن QR کد نیاز به مجوز دسترسی به دوربین است",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+    val startQrScan: () -> Unit = {
+        val hasCameraPerm = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED
+        if (hasCameraPerm) {
+            showImportDialog = false
+            showQrScanner = true
+        } else {
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
 
     val filteredNodes = remember(nodes, searchQuery, selectedProtocolFilter) {
         nodes.filter { node ->
@@ -193,6 +246,46 @@ fun ServerListScreen(
                     .fillMaxSize()
                     .padding(horizontal = 16.dp, vertical = 6.dp)
             ) {
+                // Multi-subscription Switcher + Unconditional Delete + Quota/Expiry Summary Card
+                val displayedSub = activeSubStatus ?: subscriptions.firstOrNull()
+                if (subscriptions.isNotEmpty()) {
+                    SubscriptionSwitcherRow(
+                        subscriptions = subscriptions,
+                        activeSubscriptionId = activeSubId ?: displayedSub?.id,
+                        onSelect = { viewModel.selectSubscription(it) },
+                        onDelete = { subscriptionToDelete = it }
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+                if (displayedSub != null) {
+                    SubscriptionStatusCard(
+                        status = displayedSub,
+                        isRefreshing = isRefreshingSub,
+                        refreshButtonLabel = "بروزرسانی سرور / اشتراک",
+                        refreshTestTag = "servers_refresh_subscription_button",
+                        onRefresh = { viewModel.refreshSubscriptionAndServers(context) },
+                        onLoginClick = {
+                            viewModel.clearLoginError()
+                            showLoginDialog = true
+                        },
+                        onDeleteClick = { subscriptionToDelete = displayedSub },
+                        isLoggedIn = isLoggedIn
+                    )
+                } else {
+                    AccountLoginPromptBanner(
+                        onLoginClick = {
+                            viewModel.clearLoginError()
+                            showLoginDialog = true
+                        },
+                        onRefreshClick = { viewModel.refreshSubscriptionAndServers(context) },
+                        refreshLabel = "بروزرسانی سرور / اشتراک",
+                        showRefresh = savedSubUrl.isNotBlank() || isLoggedIn,
+                        isRefreshing = isRefreshingSub
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
                 if (nodes.isNotEmpty()) {
                     SearchInputField(
                         query = searchQuery,
@@ -274,7 +367,7 @@ fun ServerListScreen(
 
         if (showImportDialog) {
             ImportNodeDialog(
-                initialSubUrl = savedSubUrl,
+                initialSubUrl = "",
                 onDismiss = { showImportDialog = false },
                 onImportRaw = { text ->
                     viewModel.importConfigText(text)
@@ -283,6 +376,42 @@ fun ServerListScreen(
                 onImportSubscription = { url ->
                     viewModel.importSubscriptionUrl(url)
                     showImportDialog = false
+                },
+                onScanQrClick = startQrScan
+            )
+        }
+
+        if (showQrScanner) {
+            QrScannerDialog(
+                onDismiss = { showQrScanner = false },
+                onQrDetected = { rawQrText ->
+                    showQrScanner = false
+                    viewModel.importScannedQrContent(rawQrText)
+                }
+            )
+        }
+
+        subscriptionToDelete?.let { subToDelete ->
+            DeleteSubscriptionConfirmDialog(
+                status = subToDelete,
+                onConfirm = {
+                    viewModel.deleteSubscription(context, subToDelete.id)
+                    subscriptionToDelete = null
+                },
+                onDismiss = { subscriptionToDelete = null }
+            )
+        }
+
+        if (showLoginDialog) {
+            AccountLoginDialog(
+                initialEmail = loggedInEmail.orEmpty(),
+                isLoading = isLoggingIn,
+                errorMessage = loginError,
+                onDismiss = { showLoginDialog = false },
+                onLoginSubmit = { email, subId ->
+                    viewModel.loginWithCredentials(email, subId) {
+                        showLoginDialog = false
+                    }
                 }
             )
         }
@@ -658,7 +787,8 @@ fun ImportNodeDialog(
     initialSubUrl: String,
     onDismiss: () -> Unit,
     onImportRaw: (String) -> Unit,
-    onImportSubscription: (String) -> Unit
+    onImportSubscription: (String) -> Unit,
+    onScanQrClick: () -> Unit = {}
 ) {
     val context = LocalContext.current
     var selectedTab by remember { mutableIntStateOf(0) }
@@ -706,7 +836,7 @@ fun ImportNodeDialog(
                 when (selectedTab) {
                     0 -> {
                         Text(
-                            text = "پشتیبانی از vless://, vmess://, v2ray://, trojan://, ss://, socks://, http://, wireguard://, hy2://:",
+                            text = "پشتیبانی از Xray JSON و لینک‌های vless://, vmess://, v2ray://, trojan://, ss://, socks://, http://, wireguard://, hy2://:",
                             color = BndTextSecondary,
                             fontSize = 11.sp
                         )
@@ -719,7 +849,7 @@ fun ImportNodeDialog(
                                 .height(130.dp)
                                 .testTag("import_raw_input"),
                             placeholder = {
-                                Text("کانفیگ‌ها را اینجا پیست کنید…", color = BndTextMuted, fontSize = 12.sp)
+                                Text("لینک کانفیگ یا کد Xray JSON را اینجا پیست کنید…", color = BndTextMuted, fontSize = 12.sp)
                             },
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedContainerColor = BndSurfaceCard,
@@ -731,21 +861,36 @@ fun ImportNodeDialog(
                             )
                         )
                         Spacer(modifier = Modifier.height(8.dp))
-                        TextButton(
-                            onClick = {
-                                val clip = getFromClipboard(context)
-                                if (clip.isNotEmpty()) rawInputText = clip
-                            }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(Icons.Default.ContentPaste, contentDescription = null, tint = BndNeonPurple)
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("پیست از کلیپ‌بورد", color = BndNeonPurple, fontSize = 12.sp)
+                            TextButton(
+                                onClick = {
+                                    val clip = getFromClipboard(context)
+                                    if (clip.isNotEmpty()) rawInputText = clip
+                                }
+                            ) {
+                                Icon(Icons.Default.ContentPaste, contentDescription = null, tint = BndNeonPurple)
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("پیست از کلیپ‌بورد", color = BndNeonPurple, fontSize = 12.sp)
+                            }
+                            OutlinedButton(
+                                onClick = onScanQrClick,
+                                modifier = Modifier.testTag("scan_qr_button_raw"),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Icon(Icons.Default.QrCodeScanner, contentDescription = "اسکن QR", tint = BndOrchidTertiary, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("اسکن QR / بارکد", color = BndOrchidTertiary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
 
                     1 -> {
                         Text(
-                            text = "لینک سابسکریپشن (Subscription URL) را وارد نمایید:",
+                            text = "لینک سابسکریپشن (Subscription URL) جدید را وارد نمایید (امکان افزودن بینهایت اشتراک):",
                             color = BndTextSecondary,
                             fontSize = 11.sp
                         )
@@ -757,7 +902,7 @@ fun ImportNodeDialog(
                                 .fillMaxWidth()
                                 .testTag("import_sub_url_input"),
                             placeholder = {
-                                Text("https://sub.bndteam.vip/api/v1/client/subscribe?token=...", color = BndTextMuted, fontSize = 12.sp)
+                                Text("https://sub.bndteam.vip/sub/...", color = BndTextMuted, fontSize = 12.sp)
                             },
                             singleLine = true,
                             colors = OutlinedTextFieldDefaults.colors(
@@ -770,15 +915,30 @@ fun ImportNodeDialog(
                             )
                         )
                         Spacer(modifier = Modifier.height(8.dp))
-                        TextButton(
-                            onClick = {
-                                val clip = getFromClipboard(context)
-                                if (clip.isNotEmpty()) subscriptionInputUrl = clip
-                            }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(Icons.Default.ContentPaste, contentDescription = null, tint = BndNeonPurple)
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("پیست از کلیپ‌بورد", color = BndNeonPurple, fontSize = 12.sp)
+                            TextButton(
+                                onClick = {
+                                    val clip = getFromClipboard(context)
+                                    if (clip.isNotEmpty()) subscriptionInputUrl = clip
+                                }
+                            ) {
+                                Icon(Icons.Default.ContentPaste, contentDescription = null, tint = BndNeonPurple)
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("پیست از کلیپ‌بورد", color = BndNeonPurple, fontSize = 12.sp)
+                            }
+                            OutlinedButton(
+                                onClick = onScanQrClick,
+                                modifier = Modifier.testTag("scan_qr_button_sub"),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Icon(Icons.Default.QrCodeScanner, contentDescription = "اسکن QR", tint = BndOrchidTertiary, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("اسکن QR / بارکد", color = BndOrchidTertiary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
                 }
