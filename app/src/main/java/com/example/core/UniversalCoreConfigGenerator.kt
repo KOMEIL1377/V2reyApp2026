@@ -54,6 +54,12 @@ object UniversalCoreConfigGenerator {
         hasGeoip: Boolean
     ): String {
         if (hasGeosite && hasGeoip) return configJson
+        val lower = configJson.lowercase()
+        if (!lower.contains("geosite:") && !lower.contains("geoip:") &&
+            !lower.contains("ext:geosite") && !lower.contains("ext:geoip")
+        ) {
+            return configJson
+        }
         return try {
             val root = JSONObject(configJson)
 
@@ -636,7 +642,10 @@ object UniversalCoreConfigGenerator {
                                 put(JSONObject().apply {
                                     put("id", node.uuid)
                                     put("encryption", "none")
-                                    node.flow?.takeIf { it.isNotBlank() }?.let { put("flow", it) }
+                                    val net = node.network.lowercase()
+                                    if (net == "tcp" || net == "raw" || net.isBlank()) {
+                                        node.flow?.takeIf { it.isNotBlank() }?.let { put("flow", it) }
+                                    }
                                 })
                             })
                         })
@@ -848,6 +857,7 @@ object UniversalCoreConfigGenerator {
                 stream.put("xhttpSettings", JSONObject().apply {
                     put("path", node.path?.ifBlank { "/" } ?: "/")
                     val hostHeader = node.host?.takeIf { it.isNotBlank() }
+                        ?: node.sni.takeIf { it.isNotBlank() && !isIpAddress(it) }
                     if (!hostHeader.isNullOrBlank()) {
                         put("host", hostHeader)
                     }
@@ -900,7 +910,14 @@ object UniversalCoreConfigGenerator {
                 stream.put("tlsSettings", JSONObject().apply {
                     put("serverName", node.sni.ifEmpty { node.server })
                     put("allowInsecure", node.allowInsecure || node.security == "insecure")
-                    put("fingerprint", node.fingerprint?.takeIf { it.isNotBlank() } ?: "chrome")
+                    val fp = node.fingerprint?.trim()?.takeIf {
+                        it.isNotBlank() && !it.equals("none", ignoreCase = true) && !it.equals("disable", ignoreCase = true)
+                    }
+                    if (fp != null) {
+                        put("fingerprint", fp)
+                    } else if (node.fingerprint.isNullOrBlank()) {
+                        put("fingerprint", "chrome")
+                    }
                     val alpnRaw = node.alpn?.takeIf { it.isNotBlank() }
                     if (!alpnRaw.isNullOrBlank()) {
                         val alpnArray = JSONArray()

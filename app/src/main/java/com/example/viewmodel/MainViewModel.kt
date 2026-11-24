@@ -381,11 +381,15 @@ class MainViewModel(
                 enableTlsFragment = enableTlsFragment.value,
                 enableFakeDns = enableFakeDns.value
             )
-            val runtimeJson = UniversalCoreConfigGenerator.sanitizeRuntimeGeodata(
-                configJson = generatedJson,
-                hasGeosite = assets.hasGeosite,
-                hasGeoip = assets.hasGeoip
-            )
+            val runtimeJson = if (node.protocol == com.example.model.ProxyProtocol.CUSTOM_JSON) {
+                UniversalCoreConfigGenerator.sanitizeRuntimeGeodata(
+                    configJson = generatedJson,
+                    hasGeosite = assets.hasGeosite,
+                    hasGeoip = assets.hasGeoip
+                )
+            } else {
+                generatedJson
+            }
             val file = java.io.File(context.filesDir, V2reyBndVpnService.CONFIG_FILE_NAME)
             file.parentFile?.mkdirs()
             file.writeText(runtimeJson, Charsets.UTF_8)

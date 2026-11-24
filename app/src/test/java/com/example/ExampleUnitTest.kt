@@ -628,5 +628,97 @@ class ExampleUnitTest {
     assertEquals("domain:ir", domesticDns.getJSONArray("domains").getString(0))
     assertFalse(domesticDns.has("expectIPs"))
   }
-}
 
+  @Test
+  fun verify_raw_vless_port_2095_xhttp_tls_outbounds_and_settings() {
+    // Variant 1: Explicit host, path, mode, alpn, allowInsecure, plus stray flow that must be ignored on xhttp
+    val uriWithHost =
+      "vless://b82b9920-a615-4cf5-b1a9-980b18fa9182@edge.v2reybnd.vip:2095?type=xhttp&path=%2Fxhttp-api&host=cdn.v2reybnd.vip&mode=stream-up&security=tls&sni=cdn.v2reybnd.vip&alpn=h2,http/1.1&fp=firefox&flow=xtls-rprx-vision&allowInsecure=1#Edge2095"
+    val node1 = ProxyConfigParser.parseLine(uriWithHost)!!
+    assertEquals(ProxyProtocol.VLESS, node1.protocol)
+    assertEquals(2095, node1.port)
+    assertEquals("xhttp", node1.network)
+    assertEquals("tls", node1.security)
+
+    val config1 = UniversalCoreConfigGenerator.generateXrayConfig(
+      node = node1,
+      connectionMode = ConnectionMode.VPN,
+      socksPort = 10808,
+      httpPort = 10809
+    )
+    // Non-geo config must be returned verbatim by sanitizeRuntimeGeodata
+    val afterSanitize1 = UniversalCoreConfigGenerator.sanitizeRuntimeGeodata(
+      configJson = config1,
+      hasGeosite = false,
+      hasGeoip = false
+    )
+    assertEquals(config1, afterSanitize1)
+
+    val outbound1 = JSONObject(config1).getJSONArray("outbounds").getJSONObject(0)
+    assertEquals("vless", outbound1.getString("protocol"))
+    val vnext1 = outbound1.getJSONObject("settings").getJSONArray("vnext").getJSONObject(0)
+    assertEquals("edge.v2reybnd.vip", vnext1.getString("address"))
+    assertEquals(2095, vnext1.getInt("port"))
+    val user1 = vnext1.getJSONArray("users").getJSONObject(0)
+    assertEquals("none", user1.getString("encryption"))
+    assertFalse(user1.has("flow"))
+
+    val stream1 = outbound1.getJSONObject("streamSettings")
+    assertEquals("xhttp", stream1.getString("network"))
+    assertEquals("tls", stream1.getString("security"))
+
+    val xhttp1 = stream1.getJSONObject("xhttpSettings")
+    assertEquals("/xhttp-api", xhttp1.getString("path"))
+    assertEquals("cdn.v2reybnd.vip", xhttp1.getString("host"))
+    assertEquals("stream-up", xhttp1.getString("mode"))
+
+    val tls1 = stream1.getJSONObject("tlsSettings")
+    assertEquals("cdn.v2reybnd.vip", tls1.getString("serverName"))
+    assertTrue(tls1.getBoolean("allowInsecure"))
+    assertEquals("firefox", tls1.getString("fingerprint"))
+    val alpn1 = tls1.getJSONArray("alpn")
+    assertEquals(2, alpn1.length())
+    assertEquals("h2", alpn1.getString(0))
+    assertEquals("http/1.1", alpn1.getString(1))
+
+    // Variant 2: Raw IP server on 2095, no host= param, domain sni=, fp=none
+    val uriWithoutHost =
+      "vless://11111111-1111-1111-1111-111111111111@185.10.10.10:2095?type=xhttp&path=%2F&security=tls&sni=sub.v2reybnd.vip&fp=none#Raw2095"
+    val node2 = ProxyConfigParser.parseLine(uriWithoutHost)!!
+    val config2 = UniversalCoreConfigGenerator.generateXrayConfig(
+      node = node2,
+      connectionMode = ConnectionMode.PROXY,
+      socksPort = 10808,
+      httpPort = 10809
+    )
+    val outbound2 = JSONObject(config2).getJSONArray("outbounds").getJSONObject(0)
+    val stream2 = outbound2.getJSONObject("streamSettings")
+    val xhttp2 = stream2.getJSONObject("xhttpSettings")
+    assertEquals("/", xhttp2.getString("path"))
+    assertEquals("sub.v2reybnd.vip", xhttp2.getString("host"))
+    assertEquals("auto", xhttp2.getString("mode"))
+
+    val tls2 = stream2.getJSONObject("tlsSettings")
+    assertEquals("sub.v2reybnd.vip", tls2.getString("serverName"))
+    assertFalse(tls2.getBoolean("allowInsecure"))
+    assertFalse(tls2.has("fingerprint"))
+
+    // Verify end-to-end ViewModel connect writes valid port 2095 xhttp+tls config.json
+    val app = ApplicationProvider.getApplicationContext<Application>()
+    val context: Context = app
+    val repository = VpnRepository(context)
+    val viewModel = MainViewModel(repository)
+    repository.addNode(node2)
+    repository.selectNode(node2)
+    viewModel.setConnectionMode(ConnectionMode.PROXY)
+    viewModel.toggleConnection(context) {}
+
+    val writtenFile = File(context.filesDir, V2reyBndVpnService.CONFIG_FILE_NAME)
+    assertTrue(writtenFile.exists())
+    val writtenOutbound = JSONObject(writtenFile.readText())
+      .getJSONArray("outbounds").getJSONObject(0)
+    assertEquals(2095, writtenOutbound.getJSONObject("settings").getJSONArray("vnext").getJSONObject(0).getInt("port"))
+    assertEquals("xhttp", writtenOutbound.getJSONObject("streamSettings").getString("network"))
+    assertEquals("tls", writtenOutbound.getJSONObject("streamSettings").getString("security"))
+  }
+}
